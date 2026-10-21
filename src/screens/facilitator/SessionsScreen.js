@@ -1,0 +1,791 @@
+// SCREEN 3 (Facilitator): Sessions (Post-Session Record).
+// Single flat form per spec decision (no header/detail split), current
+// academic-year only, no future dates.
+//
+// Attendance's Time In creates a row in the separate `attendance` table
+// (check-in/check-out, geofence/face verification, ad-hoc flag) -- this
+// screen's job is the session-quality side: category, rating, feedback.
+//
+// Layout: the list of my session records comes first, with a round "+"
+// button at the top right (showing a red count when check-ins are waiting
+// for session details). Tapping "+" opens a popup with two tabs:
+//  - "Today's check-ins": attendance rows for today that don't have a linked
+//    PSR yet. Saving one creates that PSR, linked back to the attendance row
+//    via attendanceId. This is the normal path.
+//  - "Add manually": a record for a visit that didn't go through the
+//    check-in flow. Still requires some attendance today.
+// Both forms share the same fields (SessionFields) and the same
+// validation (validateSession), so they can't drift apart.
+import React, { useState } from 'react';
+import {
+  ScrollView,
+  Text,
+  View,
+  Alert,
+  TouchableOpacity,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { useAuth } from '../../context/AuthContext';
+import { useData } from '../../data/store';
+import {
+  Screen,
+  Card,
+  FieldLabel,
+  Field,
+  Select,
+  Chip,
+  PrimaryButton,
+  RagChip,
+  TimeField,
+} from '../../components/UI';
+import { colors, spacing, ragColor } from '../../theme';
+import { todayLocalYMD, parseTimeToMinutes, isFutureTime } from '../../utils/date';
+
+const RATINGS = ['Excellent', 'Good', 'Needs follow-up'];
+const RAGS = ['Green', 'Amber', 'Red'];
+
+// The assistant is optional. Select needs a real value for every option, so
+// "no assistant" is this sentinel in the UI, converted to null on save. The
+// session's own facilitator is left out of the options.
+const NO_ASSISTANT = 'NONE';
+function assistantOptions(db, facilitatorId) {
+  return [
+    { value: NO_ASSISTANT, label: 'None' },
+    ...db.resources
+      .filter((r) => r.role === 'Facilitator' && r.id !== facilitatorId)
+      .map((r) => ({ value: r.id, label: r.name })),
+  ];
+}
+
+// A check-in where this person was only the ASSISTANT on the schedule (the
+// same date + beneficiary is scheduled with them as assistantId, and not as
+// facilitatorId). Their attendance still counts, but the session record is
+// filed by the main facilitator, so these are left out of the session forms.
+function isAssistantOnlyCheckIn(db, a) {
+  const sameVisit = db.schedule.filter((s) => s.date === a.date && s.beneficiaryId === a.beneficiaryId);
+  return (
+    sameVisit.some((s) => s.assistantId === a.facilitatorId) &&
+    !sameVisit.some((s) => s.facilitatorId === a.facilitatorId)
+  );
+}
+
+// First problem with a new session record, as a message, or null:
+//  1. a beneficiary can have only one session record on a given day (any
+//     facilitator);
+//  2. a person (facilitator or assistant) can't have two session records
+//     whose time in/out ranges overlap on the same day -- nobody can be in
+//     two places at once.
+function psrClash(db, { date, beneficiaryId, facilitatorId, assistantId, timeIn, timeOut }) {
+  const sameDay = db.psr.find((p) => p.date === date && p.beneficiaryId === beneficiaryId);
+  if (sameDay) {
+    const b = db.beneficiaries.find((x) => x.id === beneficiaryId);
+    const f = db.resources.find((x) => x.id === sameDay.facilitatorId);
+    return `${b ? `${b.school} - ${b.class}${b.section ? ' ' + b.section : ''}` : 'This beneficiary'} already has a session record for ${date}${f ? ` (${f.name})` : ''}.`;
+  }
+  const s = parseTimeToMinutes(timeIn);
+  const e = parseTimeToMinutes(timeOut);
+  if (s == null || e == null || e <= s) return null;
+  const people = [facilitatorId, assistantId].filter(Boolean);
+  const overlap = db.psr.find((p) => {
+    if (p.date !== date) return false;
+    if (!people.some((id) => id === p.facilitatorId || id === p.assistantId)) return false;
+    const os = parseTimeToMinutes(p.timeIn);
+    const oe = parseTimeToMinutes(p.timeOut);
+    return os != null && oe != null && oe > os && s < oe && os < e;
+  });
+  if (overlap) {
+    const who = people
+      .filter((id) => id === overlap.facilitatorId || id === overlap.assistantId)
+      .map((id) => db.resources.find((r) => r.id === id)?.name || id)
+      .join(' & ');
+    return `${who} already has a session record from ${overlap.timeIn} to ${overlap.timeOut} on ${date}, which overlaps this one.`;
+  }
+  return null;
+}
+
+// ---- Small building blocks -------------------------------------------------
+
+// Round "+" button shown at the top-right of the list. `badge` (optional) is
+// a small red count shown on its corner.
+function AddButton({ onPress, label, badge }) {
+  return (
+    <View>
+      <TouchableOpacity
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 22,
+          backgroundColor: colors.primary,
+          alignItems: 'center',
+          justifyContent: 'center',
+          elevation: 3,
+          shadowColor: '#000',
+          shadowOpacity: 0.2,
+          shadowRadius: 3,
+          shadowOffset: { width: 0, height: 2 },
+        }}
+      >
+        <Text style={{ color: '#fff', fontSize: 28, lineHeight: 30, fontWeight: '600' }}>+</Text>
+      </TouchableOpacity>
+      {badge > 0 && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            top: -4,
+            right: -4,
+            minWidth: 20,
+            height: 20,
+            borderRadius: 10,
+            backgroundColor: colors.red,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: 4,
+          }}
+        >
+          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>{badge}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// Row above the list: "My sessions (12)" on the left, "+" on the right.
+function ListHeader({ title, count, onAdd, addLabel, badge }) {
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: spacing.md,
+      }}
+    >
+      <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>
+        {title} ({count})
+      </Text>
+      <AddButton onPress={onAdd} label={addLabel} badge={badge} />
+    </View>
+  );
+}
+
+// Bottom-sheet popup that holds the add-session forms.
+function AddModal({ visible, title, onClose, children }) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        enabled={Platform.OS === 'ios'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' }}>
+          <View
+            style={{
+              backgroundColor: colors.bg,
+              borderTopLeftRadius: 16,
+              borderTopRightRadius: 16,
+              padding: spacing.lg,
+              maxHeight: '92%',
+            }}
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: spacing.md,
+              }}
+            >
+              <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>{title}</Text>
+              <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={{ color: colors.textMuted, fontSize: 15, fontWeight: '700' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              {children}
+              <View style={{ height: spacing.xl }} />
+            </ScrollView>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function Segmented({ tabs, value, onChange }) {
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        backgroundColor: colors.chipBg,
+        borderRadius: 10,
+        padding: 4,
+        marginBottom: spacing.lg,
+      }}
+    >
+      {tabs.map((t) => {
+        const active = t.key === value;
+        return (
+          <TouchableOpacity
+            key={t.key}
+            onPress={() => onChange(t.key)}
+            style={{
+              flex: 1,
+              paddingVertical: 10,
+              borderRadius: 8,
+              alignItems: 'center',
+              backgroundColor: active ? colors.card : 'transparent',
+              borderWidth: active ? 1 : 0,
+              borderColor: colors.border,
+            }}
+          >
+            <Text style={{ fontWeight: '700', color: active ? colors.primary : colors.textMuted }}>
+              {t.label}
+              {t.count > 0 ? `  (${t.count})` : ''}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+// A short pick-one list (rating, RAG, Yes/No) as a row of chips -- more
+// compact and quicker to tap than a dropdown for two or three options.
+function ChoiceRow({ label, options, value, onSelect }) {
+  return (
+    <View style={{ marginBottom: spacing.md }}>
+      {label ? <FieldLabel>{label}</FieldLabel> : null}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
+        {options.map((o) => (
+          <Chip
+            key={o.value}
+            label={o.label}
+            active={o.value === value}
+            color={o.color}
+            onPress={() => onSelect(o.value)}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function Divider() {
+  return <View style={{ height: 1, backgroundColor: colors.border, marginVertical: spacing.md }} />;
+}
+
+// ---- Shared form state, fields and validation ------------------------------
+
+function useSessionFields({ timeIn = '', timeOut = '', assistantId: initialAssistantId } = {}) {
+  const { db } = useData();
+  const [categoryId, setCategoryId] = useState(db.categories[0]?.id);
+  const [assistantId, setAssistantId] = useState(initialAssistantId || NO_ASSISTANT);
+  const [studentsPresent, setStudentsPresent] = useState('');
+  const [timeInValue, setTimeIn] = useState(timeIn);
+  const [timeOutValue, setTimeOut] = useState(timeOut);
+  const [rating, setRating] = useState('Good');
+  const [rag, setRag] = useState('Green');
+  const [facilitatorFeedback, setFacilitatorFeedback] = useState('');
+  const [schoolFeedback, setSchoolFeedback] = useState('');
+  const [externalOrgName, setExternalOrgName] = useState('');
+  const [externalResources, setExternalResources] = useState('');
+  const [photosUploaded, setPhotosUploaded] = useState(false);
+
+  return {
+    categoryId, setCategoryId,
+    assistantId, setAssistantId,
+    studentsPresent, setStudentsPresent,
+    timeIn: timeInValue, setTimeIn,
+    timeOut: timeOutValue, setTimeOut,
+    rating, setRating,
+    rag, setRag,
+    facilitatorFeedback, setFacilitatorFeedback,
+    schoolFeedback, setSchoolFeedback,
+    externalOrgName, setExternalOrgName,
+    externalResources, setExternalResources,
+    photosUploaded, setPhotosUploaded,
+    // Clears what's specific to one visit, keeping category/rating/RAG.
+    reset() {
+      setAssistantId(NO_ASSISTANT);
+      setStudentsPresent('');
+      setTimeIn('');
+      setTimeOut('');
+      setFacilitatorFeedback('');
+      setSchoolFeedback('');
+      setExternalOrgName('');
+      setExternalResources('');
+      setPhotosUploaded(false);
+    },
+  };
+}
+
+// Returns [title, message] for the first problem, or null if it's valid.
+function validateSession(f, date) {
+  if (!f.categoryId) return ['Life skill service category required', 'Select a category.'];
+  if (!f.timeIn.trim()) return ['Time in required', 'Enter a time in.'];
+  if (!f.timeOut.trim()) return ['Time out required', 'Enter a time out.'];
+  if (parseTimeToMinutes(f.timeIn) == null || parseTimeToMinutes(f.timeOut) == null) {
+    return ['Check the times', 'Enter times like 10:02 AM.'];
+  }
+  if (isFutureTime(date, f.timeIn) || isFutureTime(date, f.timeOut)) {
+    return ['Time is in the future', 'Time in and time out cannot be later than the current time.'];
+  }
+  if (!String(f.studentsPresent).trim()) return ['Students present required', 'Enter the number of students present.'];
+  if (!/^\d+$/.test(String(f.studentsPresent).trim())) {
+    return ['Check students present', 'Enter a whole number, like 28.'];
+  }
+  if (!f.rag) return ['RAG status required', 'Select a RAG status.'];
+  return null;
+}
+
+function toPsrFields(f) {
+  return {
+    timeIn: f.timeIn,
+    timeOut: f.timeOut,
+    categoryId: f.categoryId,
+    assistantId: f.assistantId === NO_ASSISTANT ? null : f.assistantId,
+    studentsPresent: Number(f.studentsPresent) || 0,
+    rating: f.rating,
+    rag: f.rag,
+    facilitatorFeedback: f.facilitatorFeedback,
+    schoolFeedback: f.schoolFeedback,
+    externalOrgName: f.externalOrgName || null,
+    externalResources: f.externalResources || null,
+    photosUploaded: f.photosUploaded,
+  };
+}
+
+function SessionFields({ f, date, facilitatorId, beneficiaryPicker }) {
+  const { db } = useData();
+  // Optional extras stay tucked away unless they're already filled in.
+  const [showOptional, setShowOptional] = useState(
+    !!(f.externalOrgName || f.externalResources || f.photosUploaded)
+  );
+
+  return (
+    <>
+      {beneficiaryPicker}
+
+      <Select
+        label="Life skill service category (required)"
+        value={f.categoryId}
+        onSelect={f.setCategoryId}
+        options={db.categories.map((c) => ({
+          value: c.id,
+          label: `${c.pillar} / ${c.topic}${c.subtopic !== 'OTHERS' ? ' / ' + c.subtopic : ''}`,
+        }))}
+      />
+
+      <Select
+        label="Assistant (optional)"
+        value={f.assistantId}
+        onSelect={f.setAssistantId}
+        options={assistantOptions(db, facilitatorId)}
+      />
+
+      <View style={{ flexDirection: 'row', gap: spacing.md }}>
+        <View style={{ flex: 1 }}>
+          <TimeField
+            label="Time in (required)"
+            value={f.timeIn}
+            onChange={f.setTimeIn}
+            blockFutureOn={date === todayLocalYMD() ? date : undefined}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <TimeField
+            label="Time out (required)"
+            value={f.timeOut}
+            onChange={f.setTimeOut}
+            blockFutureOn={date === todayLocalYMD() ? date : undefined}
+          />
+        </View>
+      </View>
+
+      <Field
+        label="Students present (required)"
+        value={f.studentsPresent}
+        onChangeText={f.setStudentsPresent}
+        keyboardType="number-pad"
+      />
+
+      <ChoiceRow
+        label="Rating (session quality)"
+        value={f.rating}
+        onSelect={f.setRating}
+        options={RATINGS.map((r) => ({ value: r, label: r }))}
+      />
+      <ChoiceRow
+        label="RAG status (required)"
+        value={f.rag}
+        onSelect={f.setRag}
+        options={RAGS.map((r) => ({ value: r, label: r, color: ragColor(r) }))}
+      />
+
+      <Divider />
+
+      <Field
+        label="Facilitator feedback"
+        value={f.facilitatorFeedback}
+        onChangeText={f.setFacilitatorFeedback}
+        placeholder="What went well / what didn't"
+        multiline
+      />
+      <Field
+        label="School feedback"
+        value={f.schoolFeedback}
+        onChangeText={f.setSchoolFeedback}
+        placeholder="Any feedback from the school"
+        multiline
+      />
+
+      <TouchableOpacity onPress={() => setShowOptional((v) => !v)} style={{ paddingVertical: spacing.sm }}>
+        <Text style={{ color: colors.primary, fontWeight: '700' }}>
+          {showOptional ? '\u25BE' : '\u25B8'} Optional details
+        </Text>
+      </TouchableOpacity>
+      {showOptional && (
+        <View style={{ marginTop: spacing.sm }}>
+          <Field
+            label="External org name"
+            value={f.externalOrgName}
+            onChangeText={f.setExternalOrgName}
+            placeholder="e.g. a partner NGO involved in this session"
+          />
+          <Field
+            label="External resources"
+            value={f.externalResources}
+            onChangeText={f.setExternalResources}
+            placeholder="e.g. materials or resources an external org provided"
+            multiline
+          />
+          <ChoiceRow
+            label="Photos taken and shared"
+            value={f.photosUploaded ? 'yes' : 'no'}
+            onSelect={(v) => f.setPhotosUploaded(v === 'yes')}
+            options={[
+              { value: 'no', label: 'No' },
+              { value: 'yes', label: 'Yes' },
+            ]}
+          />
+        </View>
+      )}
+    </>
+  );
+}
+
+// ---- Tab 1: complete a check-in --------------------------------------------
+
+function CompleteCheckIn({ attendanceRecord, onSaved }) {
+  const { db, addRecord, nextId } = useData();
+  const beneficiary = db.beneficiaries.find((b) => b.id === attendanceRecord.beneficiaryId);
+  // If this visit was on the schedule with an assistant, start with that
+  // assistant selected (still editable).
+  const scheduled = db.schedule.find(
+    (s) =>
+      s.date === attendanceRecord.date &&
+      s.beneficiaryId === attendanceRecord.beneficiaryId &&
+      s.facilitatorId === attendanceRecord.facilitatorId
+  );
+  const f = useSessionFields({
+    timeIn: attendanceRecord.timeIn || '',
+    timeOut: attendanceRecord.timeOut || '',
+    assistantId: scheduled?.assistantId,
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const problem = validateSession(f, attendanceRecord.date);
+    if (problem) return Alert.alert(problem[0], problem[1]);
+    const clash = psrClash(db, {
+      date: attendanceRecord.date,
+      beneficiaryId: attendanceRecord.beneficiaryId,
+      facilitatorId: attendanceRecord.facilitatorId,
+      assistantId: f.assistantId === NO_ASSISTANT ? null : f.assistantId,
+      timeIn: f.timeIn,
+      timeOut: f.timeOut,
+    });
+    if (clash) return Alert.alert('Session clash', clash);
+    setSaving(true);
+    try {
+      await addRecord('psr', {
+        id: nextId('PSR', 'psr'),
+        beneficiaryId: attendanceRecord.beneficiaryId,
+        facilitatorId: attendanceRecord.facilitatorId,
+        date: attendanceRecord.date,
+        attendanceId: attendanceRecord.id,
+        ...toPsrFields(f),
+      });
+      // No local "done" state needed -- once a psr with this attendanceId
+      // exists, this attendance record naturally drops out of
+      // pendingCheckIns on the next render.
+      Alert.alert('Saved', 'Session details recorded.', [{ text: 'OK', onPress: onSaved }]);
+    } catch (e) {
+      Alert.alert('Could not save', e.message || 'Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <View style={{ flex: 1, marginRight: spacing.sm }}>
+          <Text style={{ fontSize: 16, fontWeight: '800', color: colors.text }}>
+            {beneficiary?.school}
+          </Text>
+          <Text style={{ color: colors.textMuted, marginTop: 2 }}>
+            {beneficiary?.class}
+            {beneficiary?.section ? ` ${beneficiary.section}` : ''}
+          </Text>
+          <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>
+            {attendanceRecord.date} {'\u2022'} {attendanceRecord.timeIn}
+            {attendanceRecord.timeOut ? ` to ${attendanceRecord.timeOut}` : ' (time out not marked yet)'}
+          </Text>
+        </View>
+        {attendanceRecord.adHoc && (
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: colors.amber,
+              borderRadius: 999,
+              paddingHorizontal: 10,
+              paddingVertical: 3,
+            }}
+          >
+            <Text style={{ color: colors.amber, fontSize: 11, fontWeight: '700' }}>Ad-hoc visit</Text>
+          </View>
+        )}
+      </View>
+
+      <Divider />
+
+      <SessionFields f={f} date={attendanceRecord.date} facilitatorId={attendanceRecord.facilitatorId} />
+      <PrimaryButton title={saving ? 'Saving...' : 'Save session details'} onPress={save} disabled={saving} />
+    </Card>
+  );
+}
+
+// ---- Screen ----------------------------------------------------------------
+
+export default function SessionsScreen() {
+  const { currentUser } = useAuth();
+  const { db, addRecord, nextId } = useData();
+  const today = todayLocalYMD();
+
+  const myAttendanceToday = db.attendance.filter(
+    (a) => a.facilitatorId === currentUser?.id && a.date === today
+  );
+  // Only check-ins as the main facilitator (or an unscheduled visit) can get
+  // a session record; assistant-only check-ins can't.
+  const sessionEligibleToday = myAttendanceToday.filter((a) => !isAssistantOnlyCheckIn(db, a));
+  const assistantOnlyToday = myAttendanceToday.length - sessionEligibleToday.length;
+
+  const pendingCheckIns = sessionEligibleToday.filter(
+    (a) => !db.psr.some((p) => p.attendanceId === a.id)
+  );
+
+  const hasAttendanceToday = sessionEligibleToday.length > 0;
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [tab, setTab] = useState(pendingCheckIns.length > 0 ? 'checkins' : 'manual');
+  const [beneficiaryId, setBeneficiaryId] = useState(db.beneficiaries[0]?.id);
+  const manual = useSessionFields();
+
+  const mySessions = db.psr
+    .filter((p) => p.facilitatorId === currentUser?.id)
+    .slice()
+    .reverse();
+
+  // Opens the popup on whichever tab has something to do.
+  function openAdd() {
+    setTab(pendingCheckIns.length > 0 ? 'checkins' : 'manual');
+    setShowAdd(true);
+  }
+
+  function closeAdd() {
+    setShowAdd(false);
+  }
+
+  async function submitManual() {
+    if (!hasAttendanceToday) {
+      Alert.alert('No attendance today', 'Mark attendance on the Attendance screen before logging a session.');
+      return;
+    }
+    if (!beneficiaryId) {
+      Alert.alert('Beneficiary required', 'Select a beneficiary.');
+      return;
+    }
+    const problem = validateSession(manual, today);
+    if (problem) return Alert.alert(problem[0], problem[1]);
+    const clash = psrClash(db, {
+      date: today,
+      beneficiaryId,
+      facilitatorId: currentUser.id,
+      assistantId: manual.assistantId === NO_ASSISTANT ? null : manual.assistantId,
+      timeIn: manual.timeIn,
+      timeOut: manual.timeOut,
+    });
+    if (clash) return Alert.alert('Session clash', clash);
+    try {
+      await addRecord('psr', {
+        id: nextId('PSR', 'psr'),
+        beneficiaryId,
+        facilitatorId: currentUser.id,
+        date: today,
+        ...toPsrFields(manual),
+      });
+      Alert.alert('Saved', 'Session record submitted.', [{ text: 'OK', onPress: closeAdd }]);
+      manual.reset();
+    } catch (e) {
+      Alert.alert('Could not save', e.message || 'Please try again.');
+    }
+  }
+
+  return (
+    <Screen>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: spacing.xl }}>
+        <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.lg }}>
+          Post-Session Record
+        </Text>
+
+        <ListHeader
+          title="My sessions"
+          count={mySessions.length}
+          onAdd={openAdd}
+          addLabel="Add session record"
+          badge={pendingCheckIns.length}
+        />
+
+        {assistantOnlyToday > 0 && (
+          <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
+            You checked in as an assistant today -- the main facilitator files the session record for that visit.
+          </Text>
+        )}
+
+        {pendingCheckIns.length > 0 && (
+          <TouchableOpacity onPress={openAdd} activeOpacity={0.8}>
+            <Card style={{ borderColor: colors.amber }}>
+              <Text style={{ fontWeight: '700', color: colors.amber }}>
+                {pendingCheckIns.length} check-in{pendingCheckIns.length > 1 ? 's are' : ' is'} waiting for session details
+              </Text>
+              <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }}>
+                Tap here, or the + button, to complete {pendingCheckIns.length > 1 ? 'them' : 'it'}.
+              </Text>
+            </Card>
+          </TouchableOpacity>
+        )}
+
+        <AddModal visible={showAdd} title="Add session record" onClose={closeAdd}>
+          <Segmented
+            value={tab}
+            onChange={setTab}
+            tabs={[
+              { key: 'checkins', label: "Today's check-ins", count: pendingCheckIns.length },
+              { key: 'manual', label: 'Add manually' },
+            ]}
+          />
+
+          {tab === 'checkins' && (
+            <>
+              {pendingCheckIns.length === 0 ? (
+                <Card>
+                  <Text style={{ fontWeight: '700', color: colors.text, marginBottom: 4 }}>You're all caught up</Text>
+                  <Text style={{ color: colors.textMuted }}>
+                    No check-ins are waiting for a session record. When you time in on the Attendance screen, the
+                    visit will show up here to complete.
+                  </Text>
+                </Card>
+              ) : (
+                pendingCheckIns.map((a) => (
+                  <CompleteCheckIn
+                    key={a.id}
+                    attendanceRecord={a}
+                    onSaved={() => {
+                      // Close once the last waiting check-in has been saved.
+                      if (pendingCheckIns.length <= 1) closeAdd();
+                    }}
+                  />
+                ))
+              )}
+            </>
+          )}
+
+          {tab === 'manual' && (
+            <>
+              {!hasAttendanceToday ? (
+                <Card>
+                  <Text style={{ color: colors.textMuted }}>
+                    {assistantOnlyToday > 0
+                      ? "You checked in as an assistant today. Session records are filed by the main facilitator, so there's nothing for you to log."
+                      : "You haven't marked attendance today. Check in on the Attendance screen first -- a session record can't be logged for a day with no attendance behind it."}
+                  </Text>
+                </Card>
+              ) : (
+                <Card>
+                  <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
+                    For a visit that isn't in your check-ins. Anything you checked in for should be completed from
+                    the Today's check-ins tab instead.
+                  </Text>
+                  <SessionFields
+                    f={manual}
+                    date={today}
+                    facilitatorId={currentUser?.id}
+                    beneficiaryPicker={
+                      <Select
+                        label="Beneficiary (required)"
+                        value={beneficiaryId}
+                        onSelect={setBeneficiaryId}
+                        options={db.beneficiaries.map((b) => ({
+                          value: b.id,
+                          label: `${b.school} - ${b.class}${b.section ? ' ' + b.section : ''}`,
+                        }))}
+                      />
+                    }
+                  />
+                  <PrimaryButton title="Submit session record" onPress={submitManual} />
+                </Card>
+              )}
+            </>
+          )}
+        </AddModal>
+
+        {mySessions.length === 0 && (
+          <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>No session records yet.</Text>
+        )}
+        {mySessions.slice(0, 20).map((p) => {
+          const b = db.beneficiaries.find((x) => x.id === p.beneficiaryId);
+          const asst = p.assistantId ? db.resources.find((x) => x.id === p.assistantId) : null;
+          return (
+            <Card key={p.id}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                <Text style={{ fontWeight: '700', color: colors.text, flex: 1, marginRight: spacing.sm }}>
+                  {b?.school}
+                  {b?.class ? ` - ${b.class}${b.section ? ' ' + b.section : ''}` : ''}
+                </Text>
+                <RagChip rag={p.rag} />
+              </View>
+              <Text style={{ color: colors.textMuted, fontSize: 13 }}>
+                {p.date} - {p.studentsPresent} students - {p.rating}
+              </Text>
+              {asst && (
+                <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }}>Assistant: {asst.name}</Text>
+              )}
+            </Card>
+          );
+        })}
+        {mySessions.length > 20 && (
+          <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
+            Showing your latest 20 session records.
+          </Text>
+        )}
+      </ScrollView>
+    </Screen>
+  );
+}
