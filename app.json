@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Maitri LSP",
-    "slug": "maitri-lsp-app",
+    "name": "Maitri PPSP",
+    "slug": "maitri-ppsp-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -15,7 +15,7 @@
       "**/*"
     ],
     "android": {
-      "package": "org.maitritrust.lsp",
+      "package": "org.maitritrust.ppsp",
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
@@ -62,8 +62,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "aad05785-75a0-4d20-a9f3-5070445e8a47"
+        "projectId": "c52fdd25-36c2-4f3a-854a-4bc32c787df4"
       }
-    }
+    },
+    "owner": "ppsp-app"
   }
 }
