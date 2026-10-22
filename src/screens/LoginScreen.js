@@ -238,7 +238,7 @@ export default function LoginScreen() {
           />
         </View>
         <Text style={{ fontSize: 24, fontWeight: '800', color: colors.text, marginBottom: spacing.xs }}>
-          Maitri LSP
+          Maitri PPSP
         </Text>
         <Text style={{ color: colors.textMuted, marginBottom: spacing.xl }}>
           Use your registered phone number. New accounts are created by your

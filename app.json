@@ -36,7 +36,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "org.maitritrust.lsp",
+      "bundleIdentifier": "org.maitritrust.ppsp",
       "infoPlist": {
         "UIBackgroundModes": [
           "location"
@@ -47,7 +47,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Maitri LSP to check you are at the school for attendance, and to automatically mark time out when you leave -- including when the app is closed or your phone is locked.",
+          "locationAlwaysAndWhenInUsePermission": "Allow Maitri PPSP to check you are at the school for attendance, and to automatically mark time out when you leave -- including when the app is closed or your phone is locked.",
           "isAndroidBackgroundLocationEnabled": true,
           "isIosBackgroundLocationEnabled": true
         }
@@ -55,7 +55,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Maitri LSP to use the camera for facial attendance check."
+          "cameraPermission": "Allow Maitri PPSP to use the camera for facial attendance check."
         }
       ],
       "expo-secure-store"
