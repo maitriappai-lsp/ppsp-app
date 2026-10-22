@@ -7,3 +7,5 @@ web-build/
 android/
 
 ios/
+*.jks
+credentials.json
