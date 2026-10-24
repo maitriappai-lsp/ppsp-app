@@ -28,12 +28,31 @@ const EMPTY_DB = {
   beneficiaries: [],
   categories: [],
   geo: [],
+  // Schedule and Sessions (psr) don't exist in PPSP any more. These two stay
+  // as empty arrays only so screens that haven't been cleaned up yet (the
+  // facilitator Sessions/Dashboard/Attendance screens and the admin
+  // dashboard) don't crash on db.schedule / db.psr. Remove them together
+  // with those screens.
   schedule: [],
   psr: [],
   attendance: [],
   overrides: [],
   uploads: [],
   content: [],
+
+  // ---- PPSP ----
+  materialMaster: [],
+  studentMaster: [],
+  bookMaster: [],
+  allocations: [],
+  stockUpdate: [],
+  bookUpdate: [],
+  dsr: [],
+  dsrDetail: [],
+  audits: [],
+  auditDetail: [],
+  auditCategories: [], // read-only audit checklist (from audit_category_master)
+
   systemParameters: null,
 };
 
@@ -229,6 +248,9 @@ export function DataProvider({ children }) {
       getResource: (id) => db.resources.find((r) => r.id === id),
       getGeoForSchool: (school) => db.geo.find((g) => g.school === school),
       getGeo: (id) => db.geo.find((g) => g.id === id),
+      getMaterial: (id) => db.materialMaster.find((m) => m.id === id),
+      getBook: (id) => db.bookMaster.find((b) => b.id === id),
+      getStudent: (id) => db.studentMaster.find((s) => s.id === id),
     }),
     [db, loaded, error]
   );

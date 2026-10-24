@@ -3,7 +3,6 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme';
 import MastersScreen from '../screens/admin/MastersScreen';
-import ScheduleScreen from '../screens/admin/ScheduleScreen';
 import OverrideScreen from '../screens/admin/OverrideScreen';
 import ContentAdminScreen from '../screens/admin/ContentAdminScreen';
 import AdminDashboardScreen from '../screens/admin/AdminDashboardScreen';
@@ -13,14 +12,13 @@ const Tab = createBottomTabNavigator();
 
 const TAB_ICONS = {
   Masters: 'people-outline',
-  Schedule: 'calendar-outline',
   Override: 'hammer-outline',
   Content: 'document-text-outline',
   Dashboard: 'stats-chart-outline',
   Search: 'search-outline',
 };
 
-// Bottom nav order per spec: Masters · Schedule · Override · Content · Dashboard · Search
+// Bottom nav order: Masters · Override · Content · Dashboard · Search (PPSP has no Schedule)
 // (Admin also has everything a Facilitator has -- see App.js's RootNavigator
 // for the "Switch to facilitator view" entry point into FacilitatorTabs.)
 export default function AdminTabs() {
@@ -38,7 +36,6 @@ export default function AdminTabs() {
       })}
     >
       <Tab.Screen name="Masters" component={MastersScreen} />
-      <Tab.Screen name="Schedule" component={ScheduleScreen} />
       <Tab.Screen name="Override" component={OverrideScreen} />
       <Tab.Screen name="Content" component={ContentAdminScreen} />
       <Tab.Screen name="Dashboard" component={AdminDashboardScreen} />

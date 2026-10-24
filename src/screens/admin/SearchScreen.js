@@ -1,9 +1,10 @@
 // SCREEN (Admin): Search.
 //
 // A generic search/view/export/delete tool across every data table in the
-// app (Geo, Attendance, Schedule, Sessions, Resources, Beneficiaries, Life
-// Skills Categories, Uploads, Content) -- one tab per table, rather than a
-// bespoke screen per table.
+// app (Geo, Attendance, Resources, Beneficiaries, Life Skills Categories,
+// Uploads, Content, and the PPSP tables: Allocations, Students, Materials,
+// Books, Stock, Book stock, DSR, DSR lines, Audits, Audit lines) -- one tab
+// per table, rather than a bespoke screen per table.
 //
 // Each tab has: a free-text search across every field of that table
 // (including resolved names for linked records, e.g. searching a
@@ -53,6 +54,23 @@ function geoLabel(db, id) {
   if (!g) return id ? `(unknown: ${id})` : '--';
   return `${g.school}${g.label ? ' - ' + g.label : ''}`;
 }
+function materialLabel(db, id) {
+  const m = (db.materialMaster || []).find((x) => x.id === id);
+  if (!m) return id ? `(unknown: ${id})` : '--';
+  return `${m.name}${m.type ? ' (' + m.type + ')' : ''}`;
+}
+function bookLabel(db, id) {
+  const b = (db.bookMaster || []).find((x) => x.id === id);
+  return b ? b.title : id ? `(unknown: ${id})` : '--';
+}
+function studentLabel(db, id) {
+  const s = (db.studentMaster || []).find((x) => x.id === id);
+  return s ? s.name : id ? `(unknown: ${id})` : '--';
+}
+function auditCategoryLabel(db, no) {
+  const c = (db.auditCategories || []).find((x) => x.categoryNo === no);
+  return c ? `${c.categoryNo} ${c.description}` : no || '--';
+}
 
 // Generic "camelCaseKey" -> "Camel Case Key" for the detail view, so every
 // field is shown even for ones no table config specifically labels.
@@ -74,6 +92,17 @@ const FK_RESOLVERS = {
   uploadedBy: resourceName,
   categoryId: categoryLabel,
   geoId: geoLabel,
+  // PPSP
+  resource1Id: resourceName,
+  resource2Id: resourceName,
+  facilitator1Id: resourceName,
+  facilitator2Id: resourceName,
+  updatedBy: resourceName,
+  lastUpdatedBy: resourceName,
+  materialId: materialLabel,
+  bookId: bookLabel,
+  studentId: studentLabel,
+  categoryNo: auditCategoryLabel,
 };
 const HIDDEN_DETAIL_FIELDS = new Set(['passwordHash', 'attendanceId']);
 
@@ -82,6 +111,7 @@ function renderDetailValue(key, value, db) {
   const resolver = FK_RESOLVERS[key];
   if (resolver) return resolver(db, value);
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : '--';
   return String(value);
 }
 
@@ -113,48 +143,6 @@ const TABLE_CONFIGS = [
         .join(' '),
     summary: (r, db) =>
       `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${resourceName(db, r.facilitatorId)} \u00b7 ${r.date} \u00b7 ${r.timeIn || '--'}-${r.timeOut || '--'}`,
-  },
-  {
-    key: 'schedule',
-    dbKey: 'schedule',
-    label: 'Schedule',
-    dateField: 'date',
-    searchText: (r, db) =>
-      [
-        beneficiaryLabel(db, r.beneficiaryId),
-        resourceName(db, r.facilitatorId),
-        r.assistantId && resourceName(db, r.assistantId),
-        r.date,
-        r.time,
-        categoryLabel(db, r.categoryId),
-      ]
-        .filter(Boolean)
-        .join(' '),
-    summary: (r, db) => `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${resourceName(db, r.facilitatorId)} \u00b7 ${r.date} ${r.time || ''}`,
-  },
-  {
-    key: 'psr',
-    dbKey: 'psr',
-    label: 'Sessions',
-    dateField: 'date',
-    searchText: (r, db) =>
-      [
-        beneficiaryLabel(db, r.beneficiaryId),
-        resourceName(db, r.facilitatorId),
-        r.assistantId && resourceName(db, r.assistantId),
-        r.date,
-        categoryLabel(db, r.categoryId),
-        r.rating,
-        r.rag,
-        r.facilitatorFeedback,
-        r.schoolFeedback,
-        r.externalOrgName,
-        r.externalResources,
-      ]
-        .filter(Boolean)
-        .join(' '),
-    summary: (r, db) =>
-      `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.date} \u00b7 ${categoryLabel(db, r.categoryId)} \u00b7 RAG: ${r.rag || '--'}`,
   },
   {
     key: 'resources',
@@ -199,10 +187,134 @@ const TABLE_CONFIGS = [
     searchText: (r, db) => [r.title, r.fileType, categoryLabel(db, r.categoryId), resourceName(db, r.uploadedBy), r.date].filter(Boolean).join(' '),
     summary: (r, db) => `${r.title} \u00b7 ${r.fileType || '--'} \u00b7 ${r.date}`,
   },
+  // ---- PPSP tables ----
+  {
+    key: 'allocations',
+    dbKey: 'allocations',
+    label: 'Allocations',
+    dateField: 'fromDate',
+    searchText: (r, db) =>
+      [
+        beneficiaryLabel(db, r.beneficiaryId),
+        resourceName(db, r.resource1Id),
+        r.resource2Id && resourceName(db, r.resource2Id),
+        r.fromDate,
+        r.active === false ? 'inactive' : 'active',
+        r.updateRemarks,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) =>
+      `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${resourceName(db, r.resource1Id)}${r.resource2Id ? ' + ' + resourceName(db, r.resource2Id) : ''}${r.active === false ? ' \u00b7 Inactive' : ''}`,
+  },
+  {
+    key: 'studentMaster',
+    dbKey: 'studentMaster',
+    label: 'Students',
+    dateField: 'joinedDate',
+    searchText: (r, db) => [r.id, r.name, r.parentName, r.parentContact, beneficiaryLabel(db, r.beneficiaryId)].filter(Boolean).join(' '),
+    summary: (r, db) => `${r.name} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)}`,
+  },
+  {
+    key: 'materialMaster',
+    dbKey: 'materialMaster',
+    label: 'Materials',
+    dateField: null,
+    searchText: (r) => [r.id, r.category, r.name, r.type, (r.activities || []).join(' ')].filter(Boolean).join(' '),
+    summary: (r) => `${r.category} \u00b7 ${r.name}${r.type ? ' (' + r.type + ')' : ''}`,
+  },
+  {
+    key: 'bookMaster',
+    dbKey: 'bookMaster',
+    label: 'Books',
+    dateField: null,
+    searchText: (r) => [r.id, r.title, r.language, r.classification, r.author].filter(Boolean).join(' '),
+    summary: (r) => `${r.title}${r.language ? ' \u00b7 ' + r.language : ''}${r.classification ? ' \u00b7 ' + r.classification : ''}`,
+  },
+  {
+    key: 'stockUpdate',
+    dbKey: 'stockUpdate',
+    label: 'Stock',
+    dateField: 'lastUpdatedAt',
+    searchText: (r, db) =>
+      [beneficiaryLabel(db, r.beneficiaryId), materialLabel(db, r.materialId), r.qty, r.status, r.remarks, resourceName(db, r.lastUpdatedBy)]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) => `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${materialLabel(db, r.materialId)} \u00b7 Qty ${r.qty}${r.status ? ' \u00b7 ' + r.status : ''}`,
+  },
+  {
+    key: 'bookUpdate',
+    dbKey: 'bookUpdate',
+    label: 'Book stock',
+    dateField: 'lastUpdatedAt',
+    searchText: (r, db) =>
+      [beneficiaryLabel(db, r.beneficiaryId), bookLabel(db, r.bookId), r.qty, r.status, r.remarks, resourceName(db, r.lastUpdatedBy)]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) => `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${bookLabel(db, r.bookId)} \u00b7 Qty ${r.qty}${r.status ? ' \u00b7 ' + r.status : ''}`,
+  },
+  {
+    key: 'dsr',
+    dbKey: 'dsr',
+    label: 'DSR',
+    dateField: 'dsrDate',
+    searchText: (r, db) =>
+      [
+        resourceName(db, r.resourceId),
+        beneficiaryLabel(db, r.beneficiaryId),
+        r.dsrDate,
+        r.status,
+        r.stockRag,
+        r.bookRag,
+        r.overallRag,
+        (r.circleTimeActivities || []).join(' '),
+        r.eplMaterialsUsed,
+        r.stockRemarks,
+        r.remarks,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) => `${resourceName(db, r.resourceId)} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.dsrDate} \u00b7 ${r.status}`,
+  },
+  {
+    key: 'dsrDetail',
+    dbKey: 'dsrDetail',
+    label: 'DSR lines',
+    dateField: null,
+    searchText: (r, db) => [r.dsrId, materialLabel(db, r.materialId), r.materialActivity, r.sessionPeriod === 'M' ? 'morning' : 'afternoon'].filter(Boolean).join(' '),
+    summary: (r, db) => `${r.dsrId} \u00b7 ${materialLabel(db, r.materialId)} \u00b7 ${r.materialActivity || '--'} \u00b7 ${r.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'}`,
+  },
+  {
+    key: 'audits',
+    dbKey: 'audits',
+    label: 'Audits',
+    dateField: 'auditDate',
+    searchText: (r, db) =>
+      [
+        beneficiaryLabel(db, r.beneficiaryId),
+        resourceName(db, r.facilitator1Id),
+        r.facilitator2Id && resourceName(db, r.facilitator2Id),
+        r.auditDate,
+        `visit ${r.visitNumber}`,
+        r.status,
+        r.visitRemarks,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) => `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 Visit ${r.visitNumber} \u00b7 ${r.auditDate} \u00b7 ${r.status}`,
+  },
+  {
+    key: 'auditDetail',
+    dbKey: 'auditDetail',
+    label: 'Audit lines',
+    dateField: null,
+    searchText: (r, db) => [r.auditId, auditCategoryLabel(db, r.categoryNo), r.statusFlag, r.rating, r.remarks].filter(Boolean).join(' '),
+    summary: (r, db) => `${r.auditId} \u00b7 ${r.categoryNo} \u00b7 ${r.statusFlag || '--'}${r.rating ? ' \u00b7 Rating ' + r.rating : ''}`,
+  },
 ];
 
 export default function SearchScreen() {
-  const { db, deleteRecord } = useData();
+  const { db, deleteRecord, refresh } = useData();
   const [activeKey, setActiveKey] = useState(TABLE_CONFIGS[0].key);
   const [query, setQuery] = useState('');
   const [fromDate, setFromDate] = useState('');
@@ -228,7 +340,7 @@ export default function SearchScreen() {
     let rows = allRows;
     if (config.dateField && (fromDate || toDate)) {
       rows = rows.filter((r) => {
-        const d = r[config.dateField];
+        const d = String(r[config.dateField] || '').slice(0, 10); // timestamps -> YYYY-MM-DD
         if (!d) return false;
         if (fromDate && d < fromDate) return false;
         if (toDate && d > toDate) return false;
@@ -271,26 +383,37 @@ export default function SearchScreen() {
     geo: [{ childDbKey: 'beneficiaries', childField: 'geoId', label: 'Beneficiaries' }],
     beneficiaries: [
       { childDbKey: 'attendance', childField: 'beneficiaryId', label: 'Attendance' },
-      { childDbKey: 'schedule', childField: 'beneficiaryId', label: 'Schedule' },
-      { childDbKey: 'psr', childField: 'beneficiaryId', label: 'Sessions' },
       { childDbKey: 'uploads', childField: 'beneficiaryId', label: 'Uploads' },
+      { childDbKey: 'studentMaster', childField: 'beneficiaryId', label: 'Students' },
+      { childDbKey: 'allocations', childField: 'beneficiaryId', label: 'Allocations' },
+      { childDbKey: 'stockUpdate', childField: 'beneficiaryId', label: 'Stock' },
+      { childDbKey: 'bookUpdate', childField: 'beneficiaryId', label: 'Book stock' },
+      { childDbKey: 'dsr', childField: 'beneficiaryId', label: 'DSR' },
+      { childDbKey: 'audits', childField: 'beneficiaryId', label: 'Audits' },
     ],
     categories: [
-      { childDbKey: 'schedule', childField: 'categoryId', label: 'Schedule' },
-      { childDbKey: 'psr', childField: 'categoryId', label: 'Sessions' },
       { childDbKey: 'uploads', childField: 'categoryId', label: 'Uploads' },
       { childDbKey: 'content', childField: 'categoryId', label: 'Content' },
     ],
     resources: [
       { childDbKey: 'attendance', childField: 'facilitatorId', label: 'Attendance' },
-      { childDbKey: 'schedule', childField: 'facilitatorId', label: 'Schedule' },
-      { childDbKey: 'psr', childField: 'facilitatorId', label: 'Sessions' },
-      { childDbKey: 'schedule', childField: 'assistantId', label: 'Schedule (as assistant)' },
-      { childDbKey: 'psr', childField: 'assistantId', label: 'Sessions (as assistant)' },
       { childDbKey: 'uploads', childField: 'facilitatorId', label: 'Uploads' },
       { childDbKey: 'content', childField: 'uploadedBy', label: 'Content (uploaded by)' },
+      { childDbKey: 'allocations', childField: 'resource1Id', label: 'Allocations (resource 1)' },
+      { childDbKey: 'allocations', childField: 'resource2Id', label: 'Allocations (resource 2)' },
+      { childDbKey: 'dsr', childField: 'resourceId', label: 'DSR' },
+      { childDbKey: 'audits', childField: 'facilitator1Id', label: 'Audits' },
+      { childDbKey: 'audits', childField: 'facilitator2Id', label: 'Audits (as facilitator 2)' },
     ],
-    attendance: [{ childDbKey: 'psr', childField: 'attendanceId', label: 'Sessions' }],
+    materialMaster: [
+      { childDbKey: 'stockUpdate', childField: 'materialId', label: 'Stock' },
+      { childDbKey: 'dsrDetail', childField: 'materialId', label: 'DSR lines' },
+      { childDbKey: 'content', childField: 'materialId', label: 'Content' },
+    ],
+    bookMaster: [{ childDbKey: 'bookUpdate', childField: 'bookId', label: 'Book stock' }],
+    // Deleting a DSR / audit also removes its lines (the database cascades),
+    // and deleting a student just drops them from DSR lines, so none of
+    // those block a delete.
   };
 
   // Splits a candidate id list into those safe to delete and those with at
@@ -333,6 +456,7 @@ export default function SearchScreen() {
     }
     setBusy(false);
     setSelectedIds(new Set());
+    refresh().catch(() => {}); // cascaded rows (e.g. a DSR's lines) vanish on the server too
     if (failed.length > 0) {
       Alert.alert('Some records could not be deleted', `${ids.length - failed.length} of ${ids.length} deleted. ${failed.length} failed -- they may be referenced elsewhere.`);
     } else {

@@ -1,4 +1,5 @@
-// SCREEN 1 (Admin): Masters -- tabbed Resources / Beneficiaries / Categories / Geo.
+// SCREEN 1 (Admin): Masters -- tabbed Resources / Geo / Beneficiaries / Allocations / Students /
+// Materials / Books / Life Skills.
 // Full Add/Edit/Delete on each, plus an "Import from Excel" stub (real
 // version parses an .xlsx with exceljs/SheetJS server-side and upserts by
 // code, per Section 6 -- picking a file here just simulates that).
@@ -24,9 +25,11 @@ import { useData } from '../../data/store';
 import { apiPost } from '../../data/api';
 import { todayLocalYMD } from '../../utils/date';
 import { Screen, Card, Chip, Field, Select, PrimaryButton, SecondaryButton, SectionLabel, DateField } from '../../components/UI';
+import { AddButton, IconButton, ListHeader, AddModal, ImportFromExcel } from '../../components/MasterParts';
+import { MaterialsTab, StudentsTab, BooksTab, AllocationsTab } from './PpspMasterTabs';
 import { colors, spacing } from '../../theme';
 
-const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Life Skills'];
+const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Allocations', 'Students', 'Materials', 'Books', 'Life Skills'];
 
 export default function MastersScreen() {
   const [tab, setTab] = useState('Resources');
@@ -36,166 +39,25 @@ export default function MastersScreen() {
       <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.sm }}>
         Masters
       </Text>
-      <View style={{ flexDirection: 'row', marginBottom: spacing.md }}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={{ height: 44, flexGrow: 0, marginBottom: spacing.md }}
+        contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
+      >
         {TABS.map((t) => (
           <Chip key={t} label={t} active={tab === t} onPress={() => setTab(t)} />
         ))}
-      </View>
+      </ScrollView>
       {tab === 'Resources' && <ResourcesTab />}
       {tab === 'Geo' && <GeoTab />}
       {tab === 'Beneficiaries' && <BeneficiariesTab />}
+      {tab === 'Allocations' && <AllocationsTab />}
+      {tab === 'Students' && <StudentsTab />}
+      {tab === 'Materials' && <MaterialsTab />}
+      {tab === 'Books' && <BooksTab />}
       {tab === 'Life Skills' && <CategoriesTab />}
     </Screen>
-  );
-}
-
-// Round "+" button shown at the top-right of each master's list.
-function AddButton({ onPress, label }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      style={{
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: colors.primary,
-        alignItems: 'center',
-        justifyContent: 'center',
-        elevation: 3,
-        shadowColor: '#000',
-        shadowOpacity: 0.2,
-        shadowRadius: 3,
-        shadowOffset: { width: 0, height: 2 },
-      }}
-    >
-      <Text style={{ color: '#fff', fontSize: 28, lineHeight: 30, fontWeight: '600' }}>+</Text>
-    </TouchableOpacity>
-  );
-}
-
-// Small tappable icon used in each record row (edit / deactivate / delete).
-function IconButton({ name, color, label, onPress }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-      style={{ padding: 6 }}
-    >
-      <Ionicons name={name} size={22} color={color} />
-    </TouchableOpacity>
-  );
-}
-
-// Row above each list: "Resources (5)" on the left, "+" on the right.
-function ListHeader({ title, count, onAdd, addLabel }) {
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: spacing.md,
-      }}
-    >
-      <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>
-        {title} ({count})
-      </Text>
-      <AddButton onPress={onAdd} label={addLabel} />
-    </View>
-  );
-}
-
-// Bottom-sheet popup that holds an "Add ..." form.
-function AddModal({ visible, title, onClose, children }) {
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        enabled={Platform.OS === 'ios'}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' }}>
-          <View
-            style={{
-              backgroundColor: colors.bg,
-              borderTopLeftRadius: 16,
-              borderTopRightRadius: 16,
-              padding: spacing.lg,
-              maxHeight: '90%',
-            }}
-          >
-            <View
-              style={{
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: spacing.md,
-              }}
-            >
-              <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>{title}</Text>
-              <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Text style={{ color: colors.textMuted, fontSize: 15, fontWeight: '700' }}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              {children}
-              <View style={{ height: spacing.xl }} />
-            </ScrollView>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
-function ImportFromExcel({ label, table, columnsHint }) {
-  const { refresh } = useData();
-  const [importing, setImporting] = useState(false);
-
-  async function pick() {
-    const result = await DocumentPicker.getDocumentAsync({
-      type: [
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ],
-    });
-    if (result.canceled) return;
-    const file = result.assets?.[0];
-    if (!file) return;
-
-    setImporting(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', { uri: file.uri, name: file.name, type: file.mimeType || 'application/octet-stream' });
-      const outcome = await apiPost(`/api/import/${table}`, formData);
-      await refresh();
-      const errorPreview = outcome.errors?.length
-        ? `\n\nFirst issue: ${outcome.errors[0]}${outcome.errors.length > 1 ? ` (+${outcome.errors.length - 1} more)` : ''}`
-        : '';
-      Alert.alert(
-        'Import complete',
-        `${outcome.inserted} added, ${outcome.updated} updated, ${outcome.skipped} skipped.${errorPreview}`
-      );
-    } catch (e) {
-      Alert.alert('Import failed', e.message || 'Please try again.');
-    } finally {
-      setImporting(false);
-    }
-  }
-
-  return (
-    <Card>
-      <SectionLabel>Import {label} from Excel</SectionLabel>
-      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
-        Upload an .xlsx, one row per record. Column headers (row 1): {columnsHint}. Matching rows are updated,
-        new ones are added.
-      </Text>
-      <SecondaryButton title={importing ? 'Importing...' : 'Choose file & import'} onPress={pick} disabled={importing} />
-    </Card>
   );
 }
 
@@ -205,6 +67,7 @@ function ResourcesTab() {
   const [phone, setPhone] = useState('');
   const [type, setType] = useState('Volunteer');
   const [role, setRole] = useState('Facilitator');
+  const [auditFac, setAuditFac] = useState(false);
   const [contractStart, setContractStart] = useState('');
   const [contractEnd, setContractEnd] = useState('');
   const [saving, setSaving] = useState(false);
@@ -215,6 +78,7 @@ function ResourcesTab() {
   const [editPhone, setEditPhone] = useState('');
   const [editType, setEditType] = useState('Volunteer');
   const [editRole, setEditRole] = useState('Facilitator');
+  const [editAuditFac, setEditAuditFac] = useState(false);
   const [editContractStart, setEditContractStart] = useState('');
   const [editContractEnd, setEditContractEnd] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
@@ -239,6 +103,7 @@ function ResourcesTab() {
         address: '',
         type,
         role,
+        isAuditFacilitator: role === 'Facilitator' && auditFac,
         bloodGroup: '',
         emergencyContact: '',
         contractStart: contractStart || todayLocalYMD(),
@@ -269,6 +134,7 @@ function ResourcesTab() {
     setEditPhone(r.phone || '');
     setEditType(r.type || 'Volunteer');
     setEditRole(r.role || 'Facilitator');
+    setEditAuditFac(!!r.isAuditFacilitator);
     setEditContractStart(r.contractStart || '');
     setEditContractEnd(r.contractEnd || '');
   }
@@ -292,6 +158,7 @@ function ResourcesTab() {
         phone: editPhone,
         type: editType,
         role: editRole,
+        isAuditFacilitator: editRole === 'Facilitator' && editAuditFac,
         contractStart: editContractStart,
         contractEnd: editContractEnd,
       });
@@ -352,6 +219,16 @@ function ResourcesTab() {
           onSelect={setRole}
           options={['Facilitator', 'Admin'].map((v) => ({ value: v, label: v }))}
         />
+        {role === 'Facilitator' && (
+          <>
+            <SectionLabel>Can also log in as Audit Facilitator?</SectionLabel>
+            <Select
+              value={auditFac ? 'yes' : 'no'}
+              onSelect={(v) => setAuditFac(v === 'yes')}
+              options={[{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }]}
+            />
+          </>
+        )}
         <View style={{ flexDirection: 'row', gap: spacing.md }}>
           <View style={{ flex: 1 }}>
             <DateField label="Contract start" value={contractStart} onChange={setContractStart} placeholder="Default: today" />
@@ -386,6 +263,16 @@ function ResourcesTab() {
               onSelect={setEditRole}
               options={['Facilitator', 'Admin'].map((v) => ({ value: v, label: v }))}
             />
+            {editRole === 'Facilitator' && (
+              <>
+            <SectionLabel>Can also log in as Audit Facilitator?</SectionLabel>
+            <Select
+              value={editAuditFac ? 'yes' : 'no'}
+              onSelect={(v) => setEditAuditFac(v === 'yes')}
+              options={[{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }]}
+            />
+          </>
+        )}
             <View style={{ flexDirection: 'row', gap: spacing.md }}>
               <View style={{ flex: 1 }}>
                 <DateField label="Contract start" value={editContractStart} onChange={setEditContractStart} />
@@ -414,7 +301,7 @@ function ResourcesTab() {
                   )}
                 </View>
                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {r.id} - {r.type} - {r.role}
+                  {r.id} - {r.type} - {r.role}{r.isAuditFacilitator ? ' - Audit facilitator' : ''}
                 </Text>
                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                   Contract: {r.contractStart || '—'} to {r.contractEnd || 'open-ended'}
@@ -435,7 +322,7 @@ function ResourcesTab() {
                   onPress={() =>
                     Alert.alert('Delete resource', `Remove ${r.name}?`, [
                       { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete', style: 'destructive', onPress: () => deleteRecord('resources', r.id) },
+                      { text: 'Delete', style: 'destructive', onPress: () => deleteRecord('resources', r.id).catch((e) => Alert.alert('Could not delete', e.message || 'Please try again.')) },
                     ])
                   }
                 />
@@ -609,7 +496,7 @@ function BeneficiariesTab() {
                   onPress={() =>
                     Alert.alert('Delete beneficiary', `Remove ${b.school} ${b.class}?`, [
                       { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete', style: 'destructive', onPress: () => deleteRecord('beneficiaries', b.id) },
+                      { text: 'Delete', style: 'destructive', onPress: () => deleteRecord('beneficiaries', b.id).catch((e) => Alert.alert('Could not delete', e.message || 'Please try again.')) },
                     ])
                   }
                 />
