@@ -861,3 +861,161 @@ export function AllocationsTab() {
     </ScrollView>
   );
 }
+
+// =============================================================================
+// AUDIT CATEGORIES (the audit visit checklist)
+// The category number is the id: whole numbers ('3') are section headings and
+// numbers like '3.05' are the questions under them. The number can't be
+// changed once saved (audits point at it); the wording and Active flag can.
+// An inactive question stays in past audits but is not offered in new ones.
+// =============================================================================
+
+const HEADING_RE = /^\d{1,3}$/;
+const QUESTION_RE = /^\d{1,3}\.\d{2}$/;
+
+function auditSortOrder(no) {
+  const [a, b] = String(no).split('.');
+  return Number(a) * 1000 + (b ? Number(b) : 0);
+}
+
+export function AuditCategoriesTab() {
+  const { db, addRecord, updateRecord, deleteRecord } = useData();
+  const [filter, setFilter] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const [number, setNumber] = useState('');
+  const [description, setDescription] = useState('');
+
+  const [editingId, setEditingId] = useState(null);
+  const [eDescription, setEDescription] = useState('');
+
+  const rows = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return db.auditCategories
+      .filter((c) => !q || `${c.id} ${c.description}`.toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => (a.sortOrder ?? auditSortOrder(a.id)) - (b.sortOrder ?? auditSortOrder(b.id)));
+  }, [db.auditCategories, filter]);
+
+  async function add() {
+    const no = number.trim();
+    if (!HEADING_RE.test(no) && !QUESTION_RE.test(no)) {
+      return Alert.alert('Check the number', 'Use a whole number for a section heading (e.g. 6), or number.two digits for a question (e.g. 2.13).');
+    }
+    if (!description.trim()) return Alert.alert('Missing fields', 'Description is required.');
+    if (db.auditCategories.some((c) => c.id === no)) return Alert.alert('Already exists', `Category ${no} already exists.`);
+    setSaving(true);
+    try {
+      await addRecord('auditCategories', {
+        id: no,
+        description: description.trim(),
+        isHeading: HEADING_RE.test(no),
+        sortOrder: auditSortOrder(no),
+        active: true,
+      });
+      Alert.alert('Saved', 'Audit category added.', [{ text: 'OK', onPress: () => setShowAdd(false) }]);
+      setNumber('');
+      setDescription('');
+    } catch (e) {
+      showError('Could not add', e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveEdit() {
+    if (!eDescription.trim()) return Alert.alert('Missing fields', 'Description is required.');
+    setSaving(true);
+    try {
+      await updateRecord('auditCategories', editingId, { description: eDescription.trim() });
+      setEditingId(null);
+    } catch (e) {
+      showError('Could not save', e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleActive(c) {
+    updateRecord('auditCategories', c.id, { active: c.active === false }).catch((e) => showError('Could not update', e));
+  }
+
+  return (
+    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ListHeader title="Audit categories" count={db.auditCategories.length} onAdd={() => setShowAdd(true)} addLabel="Add audit category" />
+      <Field label="Filter" value={filter} onChangeText={setFilter} placeholder="Search by number or wording..." />
+
+      <AddModal visible={showAdd} title="Add audit category" onClose={() => setShowAdd(false)}>
+        <Field
+          label="Category number"
+          value={number}
+          onChangeText={setNumber}
+          keyboardType="numbers-and-punctuation"
+          placeholder="e.g. 6 (heading) or 2.13 (question)"
+        />
+        <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
+          A whole number is a section heading. A number with two decimals (2.13, 3.05) is a question under that section.
+          It can't be changed after saving.
+        </Text>
+        <Field label="Description" value={description} onChangeText={setDescription} placeholder="The heading or the question" multiline />
+        <PrimaryButton title={saving ? 'Saving...' : 'Add category'} onPress={add} disabled={saving} />
+      </AddModal>
+
+      {rows.length === 0 && (
+        <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
+          {db.auditCategories.length === 0 ? 'No audit categories yet. Tap + to add one.' : 'No categories match your filter.'}
+        </Text>
+      )}
+
+      {rows.map((c) => {
+        const heading = c.isHeading === true;
+        const isActive = c.active !== false;
+        return editingId === c.id ? (
+          <Card key={c.id}>
+            <SectionLabel>Edit category {c.id}</SectionLabel>
+            <Field label="Description" value={eDescription} onChangeText={setEDescription} multiline />
+            <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
+          </Card>
+        ) : (
+          <Card
+            key={c.id}
+            style={[heading ? { backgroundColor: colors.chipBg } : { marginLeft: spacing.lg }, !isActive ? { opacity: 0.6 } : null]}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <View style={{ flex: 1, marginRight: spacing.sm }}>
+                <Text style={{ fontWeight: heading ? '800' : '600', color: colors.text }}>
+                  {c.id}  {c.description}
+                </Text>
+                {!isActive && <Text style={{ color: colors.red, fontWeight: '700', fontSize: 11 }}>INACTIVE</Text>}
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                <IconButton
+                  name="create-outline"
+                  color={colors.primary}
+                  label="Edit"
+                  onPress={() => {
+                    setEditingId(c.id);
+                    setEDescription(c.description || '');
+                  }}
+                />
+                <IconButton
+                  name={isActive ? 'pause-circle-outline' : 'play-circle-outline'}
+                  color={isActive ? colors.amber : colors.green}
+                  label={isActive ? 'Make inactive' : 'Reactivate'}
+                  onPress={() => toggleActive(c)}
+                />
+                <IconButton
+                  name="trash-outline"
+                  color={colors.red}
+                  label="Delete"
+                  onPress={() => confirmDelete('Delete category', `Remove ${c.id}? If audits already use it, make it inactive instead.`, () => deleteRecord('auditCategories', c.id))}
+                />
+              </View>
+            </View>
+          </Card>
+        );
+      })}
+    </ScrollView>
+  );
+}

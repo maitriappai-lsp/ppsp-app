@@ -54,6 +54,10 @@ function geoLabel(db, id) {
   if (!g) return id ? `(unknown: ${id})` : '--';
   return `${g.school}${g.label ? ' - ' + g.label : ''}`;
 }
+function materialFull(db, id) {
+  const m = (db.materialMaster || []).find((x) => x.id === id);
+  return m ? [m.category, m.name, m.type, (m.activities || []).join(' ')].filter(Boolean).join(' ') : '';
+}
 function materialLabel(db, id) {
   const m = (db.materialMaster || []).find((x) => x.id === id);
   if (!m) return id ? `(unknown: ${id})` : '--';
@@ -68,8 +72,8 @@ function studentLabel(db, id) {
   return s ? s.name : id ? `(unknown: ${id})` : '--';
 }
 function auditCategoryLabel(db, no) {
-  const c = (db.auditCategories || []).find((x) => x.categoryNo === no);
-  return c ? `${c.categoryNo} ${c.description}` : no || '--';
+  const c = (db.auditCategories || []).find((x) => x.id === no);
+  return c ? `${c.id} ${c.description}` : no || '--';
 }
 
 // Generic "camelCaseKey" -> "Camel Case Key" for the detail view, so every
@@ -184,8 +188,9 @@ const TABLE_CONFIGS = [
     dbKey: 'content',
     label: 'Content',
     dateField: 'date',
-    searchText: (r, db) => [r.title, r.fileType, categoryLabel(db, r.categoryId), resourceName(db, r.uploadedBy), r.date].filter(Boolean).join(' '),
-    summary: (r, db) => `${r.title} \u00b7 ${r.fileType || '--'} \u00b7 ${r.date}`,
+    searchText: (r, db) =>
+      [r.fileName || r.title, r.fileType, r.remarks, materialFull(db, r.materialId), resourceName(db, r.uploadedBy), r.date].filter(Boolean).join(' '),
+    summary: (r, db) => `${r.fileName || r.title || r.id} \u00b7 ${r.fileType || '--'} \u00b7 ${r.materialId ? materialLabel(db, r.materialId) : 'no material'}`,
   },
   // ---- PPSP tables ----
   {
@@ -311,6 +316,14 @@ const TABLE_CONFIGS = [
     searchText: (r, db) => [r.auditId, auditCategoryLabel(db, r.categoryNo), r.statusFlag, r.rating, r.remarks].filter(Boolean).join(' '),
     summary: (r, db) => `${r.auditId} \u00b7 ${r.categoryNo} \u00b7 ${r.statusFlag || '--'}${r.rating ? ' \u00b7 Rating ' + r.rating : ''}`,
   },
+  {
+    key: 'auditCategories',
+    dbKey: 'auditCategories',
+    label: 'Audit checklist',
+    dateField: null,
+    searchText: (r) => [r.id, r.description, r.active === false ? 'inactive' : 'active'].filter(Boolean).join(' '),
+    summary: (r) => `${r.id} \u00b7 ${r.description}${r.active === false ? ' \u00b7 Inactive' : ''}`,
+  },
 ];
 
 export default function SearchScreen() {
@@ -391,10 +404,7 @@ export default function SearchScreen() {
       { childDbKey: 'dsr', childField: 'beneficiaryId', label: 'DSR' },
       { childDbKey: 'audits', childField: 'beneficiaryId', label: 'Audits' },
     ],
-    categories: [
-      { childDbKey: 'uploads', childField: 'categoryId', label: 'Uploads' },
-      { childDbKey: 'content', childField: 'categoryId', label: 'Content' },
-    ],
+    categories: [{ childDbKey: 'uploads', childField: 'categoryId', label: 'Uploads' }],
     resources: [
       { childDbKey: 'attendance', childField: 'facilitatorId', label: 'Attendance' },
       { childDbKey: 'uploads', childField: 'facilitatorId', label: 'Uploads' },
@@ -411,6 +421,7 @@ export default function SearchScreen() {
       { childDbKey: 'content', childField: 'materialId', label: 'Content' },
     ],
     bookMaster: [{ childDbKey: 'bookUpdate', childField: 'bookId', label: 'Book stock' }],
+    auditCategories: [{ childDbKey: 'auditDetail', childField: 'categoryNo', label: 'Audit lines' }],
     // Deleting a DSR / audit also removes its lines (the database cascades),
     // and deleting a student just drops them from DSR lines, so none of
     // those block a delete.

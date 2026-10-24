@@ -1,257 +1,287 @@
-// SCREEN 4 (Admin): Content (upload) -- publish session material for
-// facilitators to find/download on their Content screen. Accepts any file
-// type (PDF, PPT, Word, Excel, audio, video, images, etc.), uploads the
-// bytes to the backend's /api/files (Cloudflare R2 when configured, local
-// disk otherwise -- see backend/src/routes/files.js), then records the
-// metadata with the returned storagePath and openable fileUrl.
+// SCREEN (Admin): Content -- training videos and documents, organised by
+// material. Each row is ONE file linked to a material (Material ID, shown with
+// its category, name and type, plus the activities that material has). A
+// material can have as many files as needed. The file itself goes to the
+// backend's /api/files (Cloudflare R2 when configured, local disk otherwise);
+// the content row stores the returned storagePath / fileUrl, the file name, the
+// file type (picked automatically from the file, but changeable) and remarks.
 //
-// Layout: the published list comes first, with a round "+" button at the top
-// right. Tapping "+" opens the upload form in a popup. Row actions
-// (view / remove) are compact icons.
-import React, { useState } from 'react';
-import {
-  ScrollView,
-  Text,
-  View,
-  Alert,
-  TouchableOpacity,
-  Linking,
-  Modal,
-  KeyboardAvoidingView,
-  Platform,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+// Layout: the list comes first with a round "+" at the top right. "+" and the
+// edit icon open the same form in a popup. Facilitators see the same files on
+// their Content screen (screens/facilitator/ContentScreen.js).
+import React, { useMemo, useState } from 'react';
+import { ScrollView, Text, View, Alert, Linking } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
 import { apiPost } from '../../data/api';
 import { todayLocalYMD } from '../../utils/date';
-import { Screen, Card, SectionLabel, Select, PrimaryButton, SecondaryButton } from '../../components/UI';
+import { Screen, Card, Field, SectionLabel, Select, PrimaryButton, SecondaryButton } from '../../components/UI';
+import { IconButton, ListHeader, AddModal } from '../../components/MasterParts';
 import { colors, spacing } from '../../theme';
 
-// Labels the file by its extension rather than forcing everything into
-// "PDF" or "PPT" -- content published here can reasonably be any of these.
-function detectFileType(fileName) {
-  const ext = (fileName.split('.').pop() || '').toLowerCase();
+export const FILE_TYPES = ['Video', 'Document', 'PDF', 'PPT', 'Excel', 'Audio', 'Image', 'Other'];
+
+// Guesses the type from the file extension. It's only a starting point: the
+// form lets the admin change it (e.g. a PDF that is really a training document).
+export function detectFileType(fileName) {
+  const ext = (String(fileName || '').split('.').pop() || '').toLowerCase();
   if (ext === 'pdf') return 'PDF';
   if (['ppt', 'pptx'].includes(ext)) return 'PPT';
-  if (['doc', 'docx'].includes(ext)) return 'Document';
+  if (['doc', 'docx', 'txt', 'rtf'].includes(ext)) return 'Document';
   if (['xls', 'xlsx', 'csv'].includes(ext)) return 'Excel';
   if (['mp3', 'wav', 'm4a', 'aac', 'ogg'].includes(ext)) return 'Audio';
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'Video';
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext)) return 'Video';
   if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) return 'Image';
   return 'Other';
 }
 
-// Round "+" button shown at the top-right of the list.
-function AddButton({ onPress, label }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      style={{
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: colors.primary,
-        alignItems: 'center',
-        justifyContent: 'center',
-        elevation: 3,
-        shadowColor: '#000',
-        shadowOpacity: 0.2,
-        shadowRadius: 3,
-        shadowOffset: { width: 0, height: 2 },
-      }}
-    >
-      <Text style={{ color: '#fff', fontSize: 28, lineHeight: 30, fontWeight: '600' }}>+</Text>
-    </TouchableOpacity>
-  );
+export function materialTitle(m) {
+  if (!m) return '--';
+  return `${m.name}${m.type ? ' (' + m.type + ')' : ''}`;
 }
 
-// Small tappable icon used in each record row (view / remove).
-function IconButton({ name, color, label, onPress }) {
+// The selected material's category, name, type and activities.
+export function MaterialInfo({ material }) {
+  if (!material) return null;
+  const acts = material.activities || [];
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-      style={{ padding: 6 }}
-    >
-      <Ionicons name={name} size={22} color={color} />
-    </TouchableOpacity>
-  );
-}
-
-// Row above the list: "Published (8)" on the left, "+" on the right.
-function ListHeader({ title, count, onAdd, addLabel }) {
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: spacing.md,
-      }}
-    >
-      <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text }}>
-        {title} ({count})
+    <Card style={{ backgroundColor: colors.chipBg }}>
+      <Text style={{ fontWeight: '700', color: colors.text }}>{materialTitle(material)}</Text>
+      <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+        {material.id} - Category: {material.category}
+        {material.type ? ` - Type: ${material.type}` : ''}
       </Text>
-      <AddButton onPress={onAdd} label={addLabel} />
-    </View>
-  );
-}
-
-// Bottom-sheet popup that holds the upload form.
-function AddModal({ visible, title, onClose, children }) {
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        enabled={Platform.OS === 'ios'}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' }}>
-          <View
-            style={{
-              backgroundColor: colors.bg,
-              borderTopLeftRadius: 16,
-              borderTopRightRadius: 16,
-              padding: spacing.lg,
-              maxHeight: '90%',
-            }}
-          >
-            <View
-              style={{
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: spacing.md,
-              }}
-            >
-              <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>{title}</Text>
-              <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Text style={{ color: colors.textMuted, fontSize: 15, fontWeight: '700' }}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              {children}
-              <View style={{ height: spacing.xl }} />
-            </ScrollView>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+      <Text style={{ color: colors.textMuted, fontSize: 12 }}>Activities: {acts.length ? acts.join(', ') : 'none'}</Text>
+    </Card>
   );
 }
 
 export default function ContentAdminScreen() {
   const { currentUser } = useAuth();
-  const { db, addRecord, deleteRecord, nextId } = useData();
-  const [categoryId, setCategoryId] = useState(db.categories[0]?.id);
-  const [picked, setPicked] = useState(null);
-  const [publishing, setPublishing] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+  const { db, addRecord, updateRecord, deleteRecord, nextId } = useData();
 
-  function closeAdd() {
-    setShowAdd(false);
+  const [filter, setFilter] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null); // null = adding
+  const [saving, setSaving] = useState(false);
+
+  const [materialId, setMaterialId] = useState('');
+  const [fileType, setFileType] = useState('Video');
+  const [fileName, setFileName] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [picked, setPicked] = useState(null);
+
+  const materialOptions = useMemo(
+    () =>
+      db.materialMaster
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.category || '').localeCompare(b.category || '') ||
+            (a.name || '').localeCompare(b.name || '') ||
+            (a.type || '').localeCompare(b.type || '')
+        )
+        .map((m) => ({ value: m.id, label: `${m.category} / ${materialTitle(m)}` })),
+    [db.materialMaster]
+  );
+  const selectedMaterial = db.materialMaster.find((m) => m.id === materialId);
+  const editingRow = editingId ? db.content.find((c) => c.id === editingId) : null;
+
+  const rows = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return db.content
+      .filter((c) => {
+        if (!q) return true;
+        const m = db.materialMaster.find((x) => x.id === c.materialId);
+        return [c.fileName || c.title, c.fileType, c.remarks, m?.category, m?.name, m?.type, (m?.activities || []).join(' ')]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(q);
+      })
+      .slice()
+      .sort((a, b) => {
+        const ma = db.materialMaster.find((x) => x.id === a.materialId);
+        const mb = db.materialMaster.find((x) => x.id === b.materialId);
+        return (
+          (ma?.category || '~').localeCompare(mb?.category || '~') ||
+          (ma?.name || '~').localeCompare(mb?.name || '~') ||
+          (b.date || '').localeCompare(a.date || '')
+        );
+      });
+  }, [db.content, db.materialMaster, filter]);
+
+  function openAdd() {
+    setEditingId(null);
+    setMaterialId('');
+    setFileType('Video');
+    setFileName('');
+    setRemarks('');
+    setPicked(null);
+    setShowForm(true);
+  }
+
+  function openEdit(c) {
+    setEditingId(c.id);
+    setMaterialId(c.materialId || '');
+    setFileType(c.fileType || 'Other');
+    setFileName(c.fileName || c.title || '');
+    setRemarks(c.remarks || '');
+    setPicked(null);
+    setShowForm(true);
+  }
+
+  function closeForm() {
+    setShowForm(false);
+    setEditingId(null);
     setPicked(null);
   }
 
   async function pickFile() {
     const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
     if (result.canceled) return;
-    setPicked(result.assets?.[0] || null);
+    const file = result.assets?.[0];
+    if (!file) return;
+    setPicked(file);
+    setFileName(file.name); // the admin can still rename it below
+    setFileType(detectFileType(file.name));
   }
 
-  async function publish() {
-    if (!picked) return;
-    setPublishing(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', {
-        uri: picked.uri,
-        name: picked.name,
-        type: picked.mimeType || 'application/octet-stream',
-      });
-      const { storagePath, url } = await apiPost('/api/files', formData);
+  async function save() {
+    if (!materialId) return Alert.alert('Choose a material', 'Content is attached to a material -- pick one first.');
+    if (!editingId && !picked) return Alert.alert('Choose a file', 'Pick the video or document to upload.');
+    if (!fileName.trim()) return Alert.alert('File name', 'Enter a file name.');
 
-      await addRecord('content', {
-        id: nextId('CNT', 'content'),
-        title: picked.name,
-        categoryId,
-        fileType: detectFileType(picked.name),
-        uploadedBy: currentUser?.id,
-        date: todayLocalYMD(),
-        storagePath,
-        fileUrl: url,
-      });
-      closeAdd();
+    setSaving(true);
+    try {
+      let storagePath;
+      let fileUrl;
+      if (picked) {
+        const formData = new FormData();
+        formData.append('file', { uri: picked.uri, name: picked.name, type: picked.mimeType || 'application/octet-stream' });
+        const uploaded = await apiPost('/api/files', formData);
+        storagePath = uploaded.storagePath;
+        fileUrl = uploaded.url;
+      }
+
+      if (editingId) {
+        await updateRecord('content', editingId, {
+          materialId,
+          fileType,
+          fileName: fileName.trim(),
+          remarks: remarks.trim(),
+          ...(picked ? { storagePath, fileUrl } : {}),
+        });
+      } else {
+        await addRecord('content', {
+          id: nextId('CNT', 'content'),
+          materialId,
+          fileType,
+          fileName: fileName.trim(),
+          remarks: remarks.trim(),
+          uploadedBy: currentUser?.id,
+          date: todayLocalYMD(),
+          storagePath,
+          fileUrl,
+        });
+      }
+      closeForm();
     } catch (e) {
-      Alert.alert('Publish failed', e.message || 'Please try again.');
+      Alert.alert(editingId ? 'Could not save' : 'Publish failed', e.message || 'Please try again.');
     } finally {
-      setPublishing(false);
+      setSaving(false);
     }
   }
 
   return (
     <Screen>
-      <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.md }}>
-        Session content
-      </Text>
+      <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.md }}>Content</Text>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
-        <ListHeader
-          title="Published"
-          count={db.content.length}
-          onAdd={() => setShowAdd(true)}
-          addLabel="Upload content"
-        />
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <ListHeader title="Published" count={db.content.length} onAdd={openAdd} addLabel="Add content" />
+        <Field label="Filter" value={filter} onChangeText={setFilter} placeholder="Search by material, category, file name, type..." />
 
-        <AddModal visible={showAdd} title="Upload session content" onClose={closeAdd}>
-          <SectionLabel>Service category</SectionLabel>
-          <Select
-            value={categoryId}
-            onSelect={setCategoryId}
-            options={db.categories.map((c) => ({ value: c.id, label: `${c.pillar} / ${c.topic}` }))}
-          />
+        <AddModal visible={showForm} title={editingId ? 'Edit content' : 'Add content'} onClose={closeForm}>
+          <SectionLabel>Material</SectionLabel>
+          <Select value={materialId} onSelect={setMaterialId} options={materialOptions} placeholder="Choose material..." />
+          {db.materialMaster.length === 0 && (
+            <Text style={{ color: colors.amber, fontSize: 12, marginBottom: spacing.sm }}>
+              There are no materials yet. Add them under Masters, then the Materials tab, first.
+            </Text>
+          )}
+          <MaterialInfo material={selectedMaterial} />
+
+          <SectionLabel>File</SectionLabel>
           <SecondaryButton
-            title={picked ? `Selected: ${picked.name}` : 'Choose a file (any type)'}
+            title={picked ? `Selected: ${picked.name}` : editingId ? 'Replace file (optional)' : 'Choose a file (video or document)'}
             onPress={pickFile}
             style={{ marginBottom: spacing.md }}
           />
-          <PrimaryButton title={publishing ? 'Publishing…' : 'Publish content'} onPress={publish} disabled={!picked || publishing} />
+          {editingId && !picked && editingRow?.fileUrl ? (
+            <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
+              The current file stays unless you choose a new one.
+            </Text>
+          ) : null}
+
+          <SectionLabel>File type</SectionLabel>
+          <Select value={fileType} onSelect={setFileType} options={FILE_TYPES.map((t) => ({ value: t, label: t }))} />
+          <Field label="File name" value={fileName} onChangeText={setFileName} placeholder="Name shown to facilitators" />
+          <Field label="Remarks (optional)" value={remarks} onChangeText={setRemarks} multiline />
+
+          <PrimaryButton
+            title={saving ? 'Saving...' : editingId ? 'Save changes' : 'Publish content'}
+            onPress={save}
+            disabled={saving}
+          />
         </AddModal>
 
-        {db.content.map((c) => {
-          const cat = db.categories.find((x) => x.id === c.categoryId);
+        {rows.length === 0 && (
+          <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
+            {db.content.length === 0 ? 'Nothing published yet. Tap + to add a video or document.' : 'No content matches your filter.'}
+          </Text>
+        )}
+
+        {rows.map((c) => {
+          const m = db.materialMaster.find((x) => x.id === c.materialId);
+          const acts = m?.activities || [];
           return (
             <Card key={c.id}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <View style={{ flex: 1, paddingRight: spacing.sm }}>
-                  <Text style={{ fontWeight: '700', color: colors.text }}>{c.title}</Text>
+                  <Text style={{ fontWeight: '700', color: colors.text }}>{c.fileName || c.title || c.id}</Text>
                   <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                    {cat?.pillar} - {c.fileType} - {c.date}
+                    {c.fileType || '--'} - {c.date}
                   </Text>
+                  {m ? (
+                    <>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                        {materialTitle(m)} - {m.category}
+                      </Text>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>Activities: {acts.length ? acts.join(', ') : 'none'}</Text>
+                    </>
+                  ) : (
+                    <Text style={{ color: colors.amber, fontSize: 12 }}>No material linked -- tap edit to link one.</Text>
+                  )}
+                  {c.remarks ? <Text style={{ color: colors.text, fontSize: 12, marginTop: 2 }}>{c.remarks}</Text> : null}
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  {c.fileUrl && (
-                    <IconButton
-                      name="open-outline"
-                      color={colors.primary}
-                      label="View"
-                      onPress={() => Linking.openURL(c.fileUrl)}
-                    />
-                  )}
+                  {c.fileUrl ? (
+                    <IconButton name="open-outline" color={colors.primary} label="View" onPress={() => Linking.openURL(c.fileUrl)} />
+                  ) : null}
+                  <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => openEdit(c)} />
                   <IconButton
                     name="trash-outline"
                     color={colors.red}
                     label="Remove"
                     onPress={() =>
-                      Alert.alert('Remove content', `Unpublish ${c.title}?`, [
+                      Alert.alert('Remove content', `Unpublish ${c.fileName || c.title || 'this file'}?`, [
                         { text: 'Cancel', style: 'cancel' },
-                        { text: 'Remove', style: 'destructive', onPress: () => deleteRecord('content', c.id) },
+                        {
+                          text: 'Remove',
+                          style: 'destructive',
+                          onPress: () => deleteRecord('content', c.id).catch((e) => Alert.alert('Could not remove', e.message || 'Please try again.')),
+                        },
                       ])
                     }
                   />

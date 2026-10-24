@@ -1,5 +1,5 @@
 // SCREEN 1 (Admin): Masters -- tabbed Resources / Geo / Beneficiaries / Allocations / Students /
-// Materials / Books / Life Skills.
+// Materials / Books / Audit Categories.
 // Full Add/Edit/Delete on each, plus an "Import from Excel" stub (real
 // version parses an .xlsx with exceljs/SheetJS server-side and upserts by
 // code, per Section 6 -- picking a file here just simulates that).
@@ -26,10 +26,10 @@ import { apiPost } from '../../data/api';
 import { todayLocalYMD } from '../../utils/date';
 import { Screen, Card, Chip, Field, Select, PrimaryButton, SecondaryButton, SectionLabel, DateField } from '../../components/UI';
 import { AddButton, IconButton, ListHeader, AddModal, ImportFromExcel } from '../../components/MasterParts';
-import { MaterialsTab, StudentsTab, BooksTab, AllocationsTab } from './PpspMasterTabs';
+import { MaterialsTab, StudentsTab, BooksTab, AllocationsTab, AuditCategoriesTab } from './PpspMasterTabs';
 import { colors, spacing } from '../../theme';
 
-const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Allocations', 'Students', 'Materials', 'Books', 'Life Skills'];
+const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Allocations', 'Students', 'Materials', 'Books', 'Audit Categories'];
 
 export default function MastersScreen() {
   const [tab, setTab] = useState('Resources');
@@ -56,7 +56,7 @@ export default function MastersScreen() {
       {tab === 'Students' && <StudentsTab />}
       {tab === 'Materials' && <MaterialsTab />}
       {tab === 'Books' && <BooksTab />}
-      {tab === 'Life Skills' && <CategoriesTab />}
+      {tab === 'Audit Categories' && <AuditCategoriesTab />}
     </Screen>
   );
 }
@@ -506,131 +506,6 @@ function BeneficiariesTab() {
         );
       })}
       <ImportFromExcel label="beneficiaries" table="beneficiaries" columnsHint="School, Class, Section" />
-    </ScrollView>
-  );
-}
-
-const PILLARS = ['Values', 'Health and Hygiene', 'Soft Skills', 'Environment', 'Creativity', 'Others'];
-
-function CategoriesTab() {
-  const { db, addRecord, updateRecord, deleteRecord, nextId } = useData();
-  const [pillar, setPillar] = useState(PILLARS[0]);
-  const [topic, setTopic] = useState('OTHERS');
-  const [subtopic, setSubtopic] = useState('OTHERS');
-  const [saving, setSaving] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
-
-  const [editingId, setEditingId] = useState(null);
-  const [editPillar, setEditPillar] = useState(PILLARS[0]);
-  const [editTopic, setEditTopic] = useState('');
-  const [editSubtopic, setEditSubtopic] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
-
-  async function add() {
-    setSaving(true);
-    try {
-      await addRecord('categories', {
-        id: nextId('LSS-CAT', 'categories'),
-        pillar,
-        topic,
-        subtopic,
-      });
-      Alert.alert('Saved', 'Life skill category added.', [{ text: 'OK', onPress: () => setShowAdd(false) }]);
-      setTopic('OTHERS');
-      setSubtopic('OTHERS');
-    } catch (e) {
-      Alert.alert('Could not add', e.message || 'Please try again.');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function startEdit(c) {
-    setEditingId(c.id);
-    setEditPillar(PILLARS.includes(c.pillar) ? c.pillar : PILLARS[0]);
-    setEditTopic(c.topic || '');
-    setEditSubtopic(c.subtopic || '');
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-  }
-
-  async function saveEdit() {
-    setSavingEdit(true);
-    try {
-      await updateRecord('categories', editingId, { pillar: editPillar, topic: editTopic, subtopic: editSubtopic });
-      Alert.alert('Saved', 'Life skill category updated.');
-      setEditingId(null);
-    } catch (e) {
-      Alert.alert('Could not save', e.message || 'Please try again.');
-    } finally {
-      setSavingEdit(false);
-    }
-  }
-
-  return (
-    <ScrollView showsVerticalScrollIndicator={false}>
-      <ListHeader
-        title="Life skills"
-        count={db.categories.length}
-        onAdd={() => setShowAdd(true)}
-        addLabel="Add life skill"
-      />
-
-      <AddModal visible={showAdd} title="Add life skill category" onClose={() => setShowAdd(false)}>
-        <SectionLabel>Pillar</SectionLabel>
-        <Select value={pillar} onSelect={setPillar} options={PILLARS.map((p) => ({ value: p, label: p }))} />
-        <Field label="Topic (Category 2)" value={topic} onChangeText={setTopic} placeholder="OTHERS" />
-        <Field label="Sub-topic (Category 3, optional)" value={subtopic} onChangeText={setSubtopic} placeholder="OTHERS" />
-        <PrimaryButton title={saving ? 'Saving...' : 'Add Life Skill'} onPress={add} disabled={saving} />
-      </AddModal>
-
-      {db.categories.map((c) =>
-        editingId === c.id ? (
-          <Card key={c.id}>
-            <SectionLabel>Edit category</SectionLabel>
-            <SectionLabel>Pillar</SectionLabel>
-            <Select value={editPillar} onSelect={setEditPillar} options={PILLARS.map((p) => ({ value: p, label: p }))} />
-            <Field label="Topic (Category 2)" value={editTopic} onChangeText={setEditTopic} />
-            <Field label="Sub-topic (Category 3, optional)" value={editSubtopic} onChangeText={setEditSubtopic} />
-            <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-              <View style={{ flex: 1 }}>
-                <PrimaryButton title={savingEdit ? 'Saving...' : 'Save'} onPress={saveEdit} disabled={savingEdit} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <SecondaryButton title="Cancel" onPress={cancelEdit} />
-              </View>
-            </View>
-          </Card>
-        ) : (
-          <Card key={c.id}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: spacing.sm }}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>{c.pillar}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {c.id} - {c.topic} / {c.subtopic}
-                </Text>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(c)} />
-                <IconButton
-                  name="trash-outline"
-                  color={colors.red}
-                  label="Delete"
-                  onPress={() =>
-                    Alert.alert('Delete category', `Remove ${c.pillar}?`, [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Delete', style: 'destructive', onPress: () => deleteRecord('categories', c.id) },
-                    ])
-                  }
-                />
-              </View>
-            </View>
-          </Card>
-        )
-      )}
-      <ImportFromExcel label="categories" table="categories" columnsHint="Pillar, Topic, Subtopic" />
     </ScrollView>
   );
 }
