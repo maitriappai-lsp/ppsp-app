@@ -1,8 +1,7 @@
 // SCREEN (Admin): Search.
 //
 // A generic search/view/export/delete tool across every data table in the
-// app (Geo, Attendance, Resources, Beneficiaries, Life Skills Categories,
-// Uploads, Content, and the PPSP tables: Allocations, Students, Materials,
+// app (Geo, Attendance, Resources, Beneficiaries, Uploads, Content, and the PPSP tables: Allocations, Students, Materials,
 // Books, Stock, Book stock, DSR, DSR lines, Audits, Audit lines) -- one tab
 // per table, rather than a bespoke screen per table.
 //
@@ -165,14 +164,6 @@ const TABLE_CONFIGS = [
     summary: (r) => `${r.school}${r.class ? ' \u00b7 ' + r.class : ''}${r.section ? ' ' + r.section : ''}`,
   },
   {
-    key: 'categories',
-    dbKey: 'categories',
-    label: 'Life Skills',
-    dateField: null,
-    searchText: (r) => [r.pillar, r.topic, r.subtopic].filter(Boolean).join(' '),
-    summary: (r) => `${r.pillar}${r.topic ? ' / ' + r.topic : ''}${r.subtopic && r.subtopic !== 'OTHERS' ? ' / ' + r.subtopic : ''}`,
-  },
-  {
     key: 'uploads',
     dbKey: 'uploads',
     label: 'Uploads',
@@ -189,8 +180,9 @@ const TABLE_CONFIGS = [
     label: 'Content',
     dateField: 'date',
     searchText: (r, db) =>
-      [r.fileName || r.title, r.fileType, r.remarks, materialFull(db, r.materialId), resourceName(db, r.uploadedBy), r.date].filter(Boolean).join(' '),
-    summary: (r, db) => `${r.fileName || r.title || r.id} \u00b7 ${r.fileType || '--'} \u00b7 ${r.materialId ? materialLabel(db, r.materialId) : 'no material'}`,
+      [r.fileName || r.title, r.fileType, r.activity, r.remarks, materialFull(db, r.materialId), resourceName(db, r.uploadedBy), r.date].filter(Boolean).join(' '),
+    summary: (r, db) =>
+      `${r.fileName || r.title || r.id} \u00b7 ${r.fileType || '--'}${r.activity ? ' \u00b7 ' + r.activity : ''} \u00b7 ${r.materialId ? materialLabel(db, r.materialId) : 'no material'}`,
   },
   // ---- PPSP tables ----
   {
@@ -404,7 +396,6 @@ export default function SearchScreen() {
       { childDbKey: 'dsr', childField: 'beneficiaryId', label: 'DSR' },
       { childDbKey: 'audits', childField: 'beneficiaryId', label: 'Audits' },
     ],
-    categories: [{ childDbKey: 'uploads', childField: 'categoryId', label: 'Uploads' }],
     resources: [
       { childDbKey: 'attendance', childField: 'facilitatorId', label: 'Attendance' },
       { childDbKey: 'uploads', childField: 'facilitatorId', label: 'Uploads' },

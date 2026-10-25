@@ -1,14 +1,12 @@
 // SCREEN 2 (Facilitator): Attendance.
 //
 // Location-first flow: a facilitator can legitimately show up at any
-// beneficiary's location, not just the one scheduled for them that day (a
-// substitute covering someone else's session, an extra visit, etc). So the
+// beneficiary's location (a substitute covering someone else's visit, an
+// extra visit, etc). So the
 // geofence check doesn't require picking a beneficiary first -- it checks
 // the phone's GPS against every geofence in the system, works out which
 // beneficiary(ies) that geofence belongs to, and asks the facilitator to
 // confirm/pick among those if more than one class shares the same block.
-// If the resolved beneficiary wasn't on today's schedule for this
-// facilitator, that's flagged as an ad-hoc visit rather than blocked.
 //
 // The location check runs automatically as soon as this screen opens (no
 // manual button tap needed) -- a re-check button is still there in case the
@@ -36,14 +34,9 @@
 // facilitator per day: if they already have one, this screen loads it back
 // up on open rather than letting a second time-in start.
 //
-// Marking Time In creates a real attendance record (geoVerified: true,
-// adHoc: true if it wasn't scheduled) so it shows up in both dashboards'
-// Attendance tab. Marking (or auto-marking) Time Out updates that same
-// record. The session-quality side (category, rating, feedback, headcount)
-// is filled in afterward on the Sessions screen, which lists today's
-// checked-in records to finish -- and refuses to let a session be logged at
-// all for a day with no attendance record, so PSR can't exist without a
-// real check-in behind it.
+// Marking Time In creates a real attendance record (geoVerified: true) so it
+// shows up in both dashboards' Attendance tab. Marking (or auto-marking) Time
+// Out updates that same record.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, Text, View, Alert, ActivityIndicator, TouchableOpacity } from 'react-native';
 import * as Location from 'expo-location';
@@ -63,16 +56,6 @@ export default function AttendanceScreen() {
   const { currentUser } = useAuth();
   const { db, getBeneficiary, addRecord, updateRecord, nextId } = useData();
   const today = todayLocalYMD();
-
-  const todaysSchedule = useMemo(
-    // Sessions where I'm the main facilitator OR the assistant -- either way
-    // it's a scheduled visit for me, not an ad-hoc one.
-    () =>
-      db.schedule.filter(
-        (s) => (s.facilitatorId === currentUser?.id || s.assistantId === currentUser?.id) && s.date === today
-      ),
-    [db.schedule, currentUser?.id, today]
-  );
 
   const [checking, setChecking] = useState(false);
   const [geoMatch, setGeoMatch] = useState(null); // the matched geo record + distance, or null
@@ -97,9 +80,6 @@ export default function AttendanceScreen() {
   }
 
   const beneficiary = beneficiaryId ? getBeneficiary(beneficiaryId) : null;
-  const isScheduled = beneficiary
-    ? todaysSchedule.some((s) => s.beneficiaryId === beneficiary.id)
-    : false;
 
   const stateRef = useRef({});
   useEffect(() => {
@@ -315,7 +295,6 @@ export default function AttendanceScreen() {
         timeIn: nowHHMM(),
         timeOut: '',
         geoVerified: true,
-        adHoc: !isScheduled,
       };
       const saved = await addRecord('attendance', record);
       setAttendanceRecordId(saved.id);
@@ -441,27 +420,6 @@ export default function AttendanceScreen() {
           </Card>
         )}
 
-        {!resumedOpenSession && todaysSchedule.length > 0 && (
-          <Card>
-            <SectionLabel>Scheduled for you today</SectionLabel>
-            {todaysSchedule.map((s) => {
-              const b = getBeneficiary(s.beneficiaryId);
-              const assisting = s.assistantId === currentUser?.id && s.facilitatorId !== currentUser?.id;
-              return (
-                <Text key={s.id} style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {s.time} -- {b?.school} {b?.class} {b?.section}
-                  {assisting ? ' (assisting)' : ''}
-                </Text>
-              );
-            })}
-            <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>
-              You're not limited to these -- checking in anywhere with a
-              registered geofence works, and it'll be flagged if it's not on
-              today's list.
-            </Text>
-          </Card>
-        )}
-
         {!resumedOpenSession && (
           <Card>
             <SectionLabel>Location check-in</SectionLabel>
@@ -493,9 +451,8 @@ export default function AttendanceScreen() {
             )}
 
             {beneficiary && (
-              <Text style={{ color: isScheduled ? colors.textMuted : colors.amber, fontSize: 12, marginTop: spacing.sm }}>
+              <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>
                 Checking in for: {beneficiary.school} {beneficiary.class} {beneficiary.section}
-                {!isScheduled && ' -- ad-hoc visit, not on today\'s schedule'}
               </Text>
             )}
           </Card>
@@ -545,17 +502,6 @@ export default function AttendanceScreen() {
           {!canMarkTime && !timeIn && !resumedOpenSession && (
             <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>
               Check your location and pass the face check to enable time in.
-            </Text>
-          )}
-          {!isScheduled && beneficiary && timeIn && (
-            <Text style={{ color: colors.amber, fontSize: 12, marginTop: spacing.sm }}>
-              Saved with an ad-hoc remark -- {beneficiary.school} {beneficiary.class} {beneficiary.section} wasn't on
-              today's schedule. Visible to your Admin on their dashboard.
-            </Text>
-          )}
-          {timeOut && (
-            <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>
-              Head to Sessions to log the category, rating and headcount for this visit.
             </Text>
           )}
         </Card>

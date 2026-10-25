@@ -67,6 +67,7 @@ export default function ContentAdminScreen() {
   const [saving, setSaving] = useState(false);
 
   const [materialId, setMaterialId] = useState('');
+  const [activity, setActivity] = useState('');
   const [fileType, setFileType] = useState('Video');
   const [fileName, setFileName] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -94,7 +95,7 @@ export default function ContentAdminScreen() {
       .filter((c) => {
         if (!q) return true;
         const m = db.materialMaster.find((x) => x.id === c.materialId);
-        return [c.fileName || c.title, c.fileType, c.remarks, m?.category, m?.name, m?.type, (m?.activities || []).join(' ')]
+        return [c.fileName || c.title, c.fileType, c.activity, c.remarks, m?.category, m?.name, m?.type, (m?.activities || []).join(' ')]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
@@ -115,6 +116,7 @@ export default function ContentAdminScreen() {
   function openAdd() {
     setEditingId(null);
     setMaterialId('');
+    setActivity('');
     setFileType('Video');
     setFileName('');
     setRemarks('');
@@ -125,6 +127,7 @@ export default function ContentAdminScreen() {
   function openEdit(c) {
     setEditingId(c.id);
     setMaterialId(c.materialId || '');
+    setActivity(c.activity || '');
     setFileType(c.fileType || 'Other');
     setFileName(c.fileName || c.title || '');
     setRemarks(c.remarks || '');
@@ -168,6 +171,7 @@ export default function ContentAdminScreen() {
       if (editingId) {
         await updateRecord('content', editingId, {
           materialId,
+          activity,
           fileType,
           fileName: fileName.trim(),
           remarks: remarks.trim(),
@@ -177,6 +181,7 @@ export default function ContentAdminScreen() {
         await addRecord('content', {
           id: nextId('CNT', 'content'),
           materialId,
+          activity,
           fileType,
           fileName: fileName.trim(),
           remarks: remarks.trim(),
@@ -204,13 +209,40 @@ export default function ContentAdminScreen() {
 
         <AddModal visible={showForm} title={editingId ? 'Edit content' : 'Add content'} onClose={closeForm}>
           <SectionLabel>Material</SectionLabel>
-          <Select value={materialId} onSelect={setMaterialId} options={materialOptions} placeholder="Choose material..." />
+          <Select
+            value={materialId}
+            onSelect={(v) => {
+              if (v !== materialId) setActivity(''); // the activity list belongs to the material
+              setMaterialId(v);
+            }}
+            options={materialOptions}
+            placeholder="Choose material..."
+          />
           {db.materialMaster.length === 0 && (
             <Text style={{ color: colors.amber, fontSize: 12, marginBottom: spacing.sm }}>
               There are no materials yet. Add them under Masters, then the Materials tab, first.
             </Text>
           )}
           <MaterialInfo material={selectedMaterial} />
+          {selectedMaterial ? (
+            (selectedMaterial.activities || []).length > 0 ? (
+              <>
+                <SectionLabel>Activity (optional)</SectionLabel>
+                <Select
+                  value={activity}
+                  onSelect={setActivity}
+                  options={[
+                    { value: '', label: 'No specific activity' },
+                    ...selectedMaterial.activities.map((a) => ({ value: a, label: a })),
+                  ]}
+                />
+              </>
+            ) : (
+              <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
+                This material has no activities, so there is nothing to pick here. Activities are set under Masters, then Materials.
+              </Text>
+            )
+          ) : null}
 
           <SectionLabel>File</SectionLabel>
           <SecondaryButton
@@ -253,6 +285,7 @@ export default function ContentAdminScreen() {
                   <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                     {c.fileType || '--'} - {c.date}
                   </Text>
+                  {c.activity ? <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700' }}>Activity: {c.activity}</Text> : null}
                   {m ? (
                     <>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>

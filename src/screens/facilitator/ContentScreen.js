@@ -44,10 +44,10 @@ export default function ContentScreen() {
     return db.materialMaster
       .filter((m) => byMaterial[m.id])
       .filter((m) => !materialId || m.id === materialId)
-      .map((m) => ({ material: m, files: byMaterial[m.id].slice().sort((a, b) => (a.fileName || '').localeCompare(b.fileName || '')) }))
+      .map((m) => ({ material: m, files: byMaterial[m.id].slice().sort((a, b) => (a.activity || '').localeCompare(b.activity || '') || (a.fileName || '').localeCompare(b.fileName || '')) }))
       .filter(({ material: m, files }) => {
         if (!q) return true;
-        const text = [m.category, m.name, m.type, (m.activities || []).join(' '), ...files.flatMap((f) => [f.fileName, f.fileType, f.remarks])];
+        const text = [m.category, m.name, m.type, (m.activities || []).join(' '), ...files.flatMap((f) => [f.fileName, f.fileType, f.activity, f.remarks])];
         return text.filter(Boolean).join(' ').toLowerCase().includes(q);
       })
       .sort((a, b) => (a.material.category || '').localeCompare(b.material.category || '') || (a.material.name || '').localeCompare(b.material.name || ''));
@@ -156,6 +156,7 @@ export default function ContentScreen() {
                     <View style={{ flex: 1, paddingRight: spacing.sm }}>
                       <Text style={{ fontWeight: '700', color: colors.text }}>{f.fileName || f.title || f.id}</Text>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>{f.fileType || '--'}</Text>
+                      {f.activity ? <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '700' }}>Activity: {f.activity}</Text> : null}
                       {f.remarks ? <Text style={{ color: colors.text, fontSize: 12 }}>{f.remarks}</Text> : null}
                     </View>
                     <IconButton name="eye-outline" color={colors.primary} label="View" onPress={() => view(f)} />

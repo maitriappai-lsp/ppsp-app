@@ -222,7 +222,6 @@ export default function OverrideScreen() {
             timeIn: timeIn || null,
             timeOut: timeOut || null,
             geoVerified: false,
-            adHoc: true,
             ...patch,
           });
           created += 1;

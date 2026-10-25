@@ -28,13 +28,6 @@ const EMPTY_DB = {
   beneficiaries: [],
   categories: [],
   geo: [],
-  // Schedule and Sessions (psr) don't exist in PPSP any more. These two stay
-  // as empty arrays only so screens that haven't been cleaned up yet (the
-  // facilitator Sessions/Dashboard/Attendance screens and the admin
-  // dashboard) don't crash on db.schedule / db.psr. Remove them together
-  // with those screens.
-  schedule: [],
-  psr: [],
   attendance: [],
   overrides: [],
   uploads: [],
