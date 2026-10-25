@@ -31,6 +31,19 @@ import { colors, spacing } from '../../theme';
 
 const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Allocations', 'Students', 'Materials', 'Books', 'Audit Categories'];
 
+// One small icon tile per master, laid out four to a row so all eight are
+// visible at once -- no sideways scrolling to find a master.
+const TAB_ICONS = {
+  Resources: 'people-outline',
+  Geo: 'location-outline',
+  Beneficiaries: 'school-outline',
+  Allocations: 'swap-horizontal-outline',
+  Students: 'person-outline',
+  Materials: 'cube-outline',
+  Books: 'book-outline',
+  'Audit Categories': 'checkmark-done-outline',
+};
+
 export default function MastersScreen() {
   const [tab, setTab] = useState('Resources');
 
@@ -39,16 +52,36 @@ export default function MastersScreen() {
       <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.sm }}>
         Masters
       </Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={{ height: 44, flexGrow: 0, marginBottom: spacing.md }}
-        contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
-      >
-        {TABS.map((t) => (
-          <Chip key={t} label={t} active={tab === t} onPress={() => setTab(t)} />
-        ))}
-      </ScrollView>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -3, marginBottom: spacing.sm }}>
+        {TABS.map((t) => {
+          const on = tab === t;
+          return (
+            <View key={t} style={{ width: '25%', padding: 3 }}>
+              <TouchableOpacity
+                onPress={() => setTab(t)}
+                style={{
+                  height: 62,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: on ? colors.primary : colors.border,
+                  backgroundColor: on ? colors.primary : colors.chipBg,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: 2,
+                }}
+              >
+                <Ionicons name={TAB_ICONS[t]} size={20} color={on ? '#fff' : colors.primary} />
+                <Text
+                  numberOfLines={2}
+                  style={{ fontSize: 10, fontWeight: '700', textAlign: 'center', marginTop: 2, color: on ? '#fff' : colors.text }}
+                >
+                  {t}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+      </View>
       {tab === 'Resources' && <ResourcesTab />}
       {tab === 'Geo' && <GeoTab />}
       {tab === 'Beneficiaries' && <BeneficiariesTab />}

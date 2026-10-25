@@ -137,11 +137,25 @@ export default function UploadsScreen() {
   const { db, addRecord, nextId } = useData();
 
   const [beneficiaryId, setBeneficiaryId] = useState(db.beneficiaries[0]?.id);
-  const [categoryId, setCategoryId] = useState(db.categories[0]?.id);
+  const [materialId, setMaterialId] = useState(''); // '' = not linked to a material
   const [description, setDescription] = useState('');
   const [picked, setPicked] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+
+  // "Link to Materials/Work": the material master as category / name (type).
+  const materialOptions = [
+    { value: '', label: 'Not linked to a material' },
+    ...db.materialMaster
+      .slice()
+      .sort(
+        (a, b) =>
+          (a.category || '').localeCompare(b.category || '') ||
+          (a.name || '').localeCompare(b.name || '') ||
+          (a.type || '').localeCompare(b.type || '')
+      )
+      .map((m) => ({ value: m.id, label: `${m.category} / ${m.name}${m.type ? ' (' + m.type + ')' : ''}` })),
+  ];
 
   const myUploads = db.uploads
     .filter((u) => u.facilitatorId === currentUser?.id)
@@ -152,6 +166,7 @@ export default function UploadsScreen() {
     setShowAdd(false);
     setPicked(null);
     setDescription('');
+    setMaterialId('');
   }
 
   async function pickFile() {
@@ -178,7 +193,7 @@ export default function UploadsScreen() {
         id: nextId('UPL', 'uploads'),
         fileName: picked.name,
         beneficiaryId,
-        categoryId,
+        materialId,
         facilitatorId: currentUser.id,
         date: todayLocalYMD(),
         description,
@@ -217,11 +232,12 @@ export default function UploadsScreen() {
               label: `${b.school} - ${b.class}${b.section ? ' ' + b.section : ''}`,
             }))}
           />
-          <SectionLabel>Link to Life Skills Category</SectionLabel>
+          <SectionLabel>Link to Materials/Work</SectionLabel>
           <Select
-            value={categoryId}
-            onSelect={setCategoryId}
-            options={db.categories.map((c) => ({ value: c.id, label: `${c.pillar} / ${c.topic}` }))}
+            value={materialId}
+            onSelect={setMaterialId}
+            options={materialOptions}
+            placeholder="Choose material..."
           />
           <Field
             label="File description"
@@ -244,6 +260,7 @@ export default function UploadsScreen() {
         )}
         {myUploads.slice(0, 20).map((u) => {
           const b = db.beneficiaries.find((x) => x.id === u.beneficiaryId);
+          const m = db.materialMaster.find((x) => x.id === u.materialId);
           return (
             <Card key={u.id}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -252,6 +269,12 @@ export default function UploadsScreen() {
                   <Text style={{ color: colors.textMuted, fontSize: 13 }}>
                     {b?.school} - {u.date}
                   </Text>
+                  {m ? (
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                      {m.name}
+                      {m.type ? ` (${m.type})` : ''} - {m.category}
+                    </Text>
+                  ) : null}
                 </View>
                 {u.fileUrl ? (
                   <IconButton

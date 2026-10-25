@@ -55,11 +55,6 @@ function beneficiaryLabel(db, id) {
   if (!b) return id ? `(unknown: ${id})` : '--';
   return `${b.school}${b.class ? ' - ' + b.class : ''}${b.section ? ' ' + b.section : ''}`;
 }
-function categoryLabel(db, id) {
-  const c = db.categories.find((x) => x.id === id);
-  if (!c) return id ? `(unknown: ${id})` : '--';
-  return `${c.pillar}${c.topic ? ' / ' + c.topic : ''}`;
-}
 function geoLabel(db, id) {
   const g = db.geo.find((x) => x.id === id);
   if (!g) return id ? `(unknown: ${id})` : '--';
@@ -105,7 +100,6 @@ const FK_RESOLVERS = {
   loggedBy: resourceName,
   overriddenBy: resourceName,
   uploadedBy: resourceName,
-  categoryId: categoryLabel,
   geoId: geoLabel,
   // PPSP
   resource1Id: resourceName,
@@ -218,10 +212,11 @@ const TABLE_CONFIGS = [
     label: 'Uploads',
     dateField: 'date',
     searchText: (r, db) =>
-      [r.fileName, r.description, beneficiaryLabel(db, r.beneficiaryId), resourceName(db, r.facilitatorId), categoryLabel(db, r.categoryId), r.date]
+      [r.fileName, r.description, beneficiaryLabel(db, r.beneficiaryId), resourceName(db, r.facilitatorId), materialFull(db, r.materialId), r.date]
         .filter(Boolean)
         .join(' '),
-    summary: (r, db) => `${r.fileName} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.date}`,
+    summary: (r, db) =>
+      `${r.fileName} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.date}${r.materialId ? ' \u00b7 ' + materialLabel(db, r.materialId) : ''}`,
   },
   {
     key: 'content',
@@ -493,6 +488,7 @@ export default function SearchScreen() {
       { childDbKey: 'stockUpdate', childField: 'materialId', label: 'Stock' },
       { childDbKey: 'dsrDetail', childField: 'materialId', label: 'DSR lines' },
       { childDbKey: 'content', childField: 'materialId', label: 'Content' },
+      { childDbKey: 'uploads', childField: 'materialId', label: 'Uploads' },
     ],
     bookMaster: [{ childDbKey: 'bookUpdate', childField: 'bookId', label: 'Book stock' }],
     auditCategories: [{ childDbKey: 'auditDetail', childField: 'categoryNo', label: 'Audit lines' }],
@@ -657,12 +653,8 @@ export default function SearchScreen() {
         })}
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={{ height: 40, flexGrow: 0, marginBottom: spacing.md }}
-        contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
-      >
+      {/* The tables in this group. They wrap onto as many lines as needed, so every one is visible (no sideways scrolling). */}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
         {group.tables.map((key) => {
           const c = TABLE_CONFIGS.find((t) => t.key === key);
           const active = c.key === activeKey;
@@ -671,10 +663,11 @@ export default function SearchScreen() {
               key={c.key}
               onPress={() => switchTable(c.key)}
               style={{
-                height: 32,
+                minHeight: 32,
                 justifyContent: 'center',
                 paddingHorizontal: 12,
                 marginRight: spacing.xs,
+                marginBottom: spacing.xs,
                 borderRadius: 16,
                 borderWidth: 1,
                 borderColor: active ? colors.primary : colors.border,
@@ -687,7 +680,7 @@ export default function SearchScreen() {
             </TouchableOpacity>
           );
         })}
-      </ScrollView>
+      </View>
 
       <Field label="Search" value={query} onChangeText={setQuery} placeholder={`Search ${config.label}...`} />
 

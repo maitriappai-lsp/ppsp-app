@@ -4,7 +4,8 @@
 // to add, and edit / delete icons on each row. Materials, Students and Books
 // also have "Import from Excel".
 import React, { useMemo, useState } from 'react';
-import { ScrollView, Text, View, Alert } from 'react-native';
+import { ScrollView, Text, View, Alert, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useData } from '../../data/store';
 import { useAuth } from '../../context/AuthContext';
 import { todayLocalYMD } from '../../utils/date';
@@ -861,10 +862,12 @@ export function AllocationsTab() {
 
 // =============================================================================
 // AUDIT CATEGORIES (the audit visit checklist)
-// The category number is the id: whole numbers ('3') are section headings and
-// numbers like '3.05' are the questions under them. The number can't be
-// changed once saved (audits point at it); the wording and Active flag can.
-// An inactive question stays in past audits but is not offered in new ones.
+// Shown grouped by section: each section heading is a collapsible bar with
+// its question count, and the questions sit underneath it. The category
+// number is the id: a whole number ('3') is a section heading and a number
+// like '3.05' is a question under section 3. The number can't be changed once
+// saved (audits point at it); the wording and Active flag can. An inactive
+// question stays in past audits but is not offered in new ones.
 // =============================================================================
 
 const HEADING_RE = /^\d{1,3}$/;
@@ -874,31 +877,96 @@ function auditSortOrder(no) {
   const [a, b] = String(no).split('.');
   return Number(a) * 1000 + (b ? Number(b) : 0);
 }
+const majorOf = (id) => String(id).split('.')[0];
+const pad2 = (n) => String(n).padStart(2, '0');
 
 export function AuditCategoriesTab() {
   const { db, addRecord, updateRecord, deleteRecord } = useData();
   const [filter, setFilter] = useState('');
+  const [open, setOpen] = useState({}); // section number -> expanded?
+  const [lastOpened, setLastOpened] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const [kind, setKind] = useState('question'); // 'question' | 'heading'
+  const [section, setSection] = useState('');
   const [number, setNumber] = useState('');
   const [description, setDescription] = useState('');
 
   const [editingId, setEditingId] = useState(null);
   const [eDescription, setEDescription] = useState('');
 
-  const rows = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return db.auditCategories
-      .filter((c) => !q || `${c.id} ${c.description}`.toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => (a.sortOrder ?? auditSortOrder(a.id)) - (b.sortOrder ?? auditSortOrder(b.id)));
-  }, [db.auditCategories, filter]);
+  // Sections: one per whole number, with its heading (if there is one) and questions.
+  const sections = useMemo(() => {
+    const map = {};
+    db.auditCategories.forEach((c) => {
+      const m = majorOf(c.id);
+      const s = (map[m] = map[m] || { major: m, heading: null, questions: [] });
+      if (c.isHeading) s.heading = c;
+      else s.questions.push(c);
+    });
+    const bySort = (a, b) => (a.sortOrder ?? auditSortOrder(a.id)) - (b.sortOrder ?? auditSortOrder(b.id));
+    Object.values(map).forEach((s) => s.questions.sort(bySort));
+    return Object.values(map).sort((a, b) => Number(a.major) - Number(b.major));
+  }, [db.auditCategories]);
+
+  // With a filter, only matching sections show (and open up, showing just the
+  // matching questions unless the heading itself matched).
+  const q = filter.trim().toLowerCase();
+  const visible = useMemo(() => {
+    if (!q) return sections.map((s) => ({ ...s, shown: s.questions, forceOpen: false }));
+    const has = (c) => `${c.id} ${c.description}`.toLowerCase().includes(q);
+    return sections
+      .map((s) => {
+        const headingHit = s.heading ? has(s.heading) : false;
+        const shown = headingHit ? s.questions : s.questions.filter(has);
+        return { ...s, shown, forceOpen: true, hit: headingHit || shown.length > 0 };
+      })
+      .filter((s) => s.hit);
+  }, [sections, q]);
+
+  function suggestNumber(k, sec) {
+    if (k === 'heading') return String(Math.max(0, ...sections.map((s) => Number(s.major))) + 1);
+    if (!sec) return '';
+    const s = sections.find((x) => x.major === sec);
+    const maxMinor = Math.max(0, ...(s?.questions || []).map((c) => Number(String(c.id).split('.')[1])));
+    return `${sec}.${pad2(maxMinor + 1)}`;
+  }
+
+  function openAdd(k, sec) {
+    const kk = sections.length === 0 ? 'heading' : k;
+    const ss = kk === 'question' ? sec || sections[0]?.major || '' : '';
+    setKind(kk);
+    setSection(ss);
+    setNumber(suggestNumber(kk, ss));
+    setDescription('');
+    setShowAdd(true);
+  }
+  function changeKind(k) {
+    setKind(k);
+    const ss = k === 'question' ? section || lastOpened || sections[0]?.major || '' : '';
+    setSection(ss);
+    setNumber(suggestNumber(k, ss));
+  }
+  function changeSection(sec) {
+    setSection(sec);
+    setNumber(suggestNumber('question', sec));
+  }
+
+  function toggleSection(major, isOpen) {
+    setOpen((prev) => ({ ...prev, [major]: !isOpen }));
+    if (!isOpen) setLastOpened(major);
+  }
 
   async function add() {
     const no = number.trim();
-    if (!HEADING_RE.test(no) && !QUESTION_RE.test(no)) {
-      return Alert.alert('Check the number', 'Use a whole number for a section heading (e.g. 6), or number.two digits for a question (e.g. 2.13).');
+    if (kind === 'heading') {
+      if (!HEADING_RE.test(no)) return Alert.alert('Check the number', 'A section heading is a whole number, e.g. 6.');
+    } else {
+      if (!section) return Alert.alert('Choose the section', 'Pick the section this question belongs to.');
+      if (!QUESTION_RE.test(no) || majorOf(no) !== section) {
+        return Alert.alert('Check the number', `A question in section ${section} is numbered like ${section}.05.`);
+      }
     }
     if (!description.trim()) return Alert.alert('Missing fields', 'Description is required.');
     if (db.auditCategories.some((c) => c.id === no)) return Alert.alert('Already exists', `Category ${no} already exists.`);
@@ -907,13 +975,13 @@ export function AuditCategoriesTab() {
       await addRecord('auditCategories', {
         id: no,
         description: description.trim(),
-        isHeading: HEADING_RE.test(no),
+        isHeading: kind === 'heading',
         sortOrder: auditSortOrder(no),
         active: true,
       });
-      Alert.alert('Saved', 'Audit category added.', [{ text: 'OK', onPress: () => setShowAdd(false) }]);
-      setNumber('');
-      setDescription('');
+      setOpen((prev) => ({ ...prev, [majorOf(no)]: true }));
+      setLastOpened(majorOf(no));
+      setShowAdd(false);
     } catch (e) {
       showError('Could not add', e);
     } finally {
@@ -938,78 +1006,152 @@ export function AuditCategoriesTab() {
     updateRecord('auditCategories', c.id, { active: c.active === false }).catch((e) => showError('Could not update', e));
   }
 
+  function deleteSection(s) {
+    if (s.questions.length > 0) {
+      return Alert.alert('Section has questions', `Delete or move the ${s.questions.length} question(s) in section ${s.major} first.`);
+    }
+    confirmDelete('Delete section', `Remove section ${s.major}?`, () => deleteRecord('auditCategories', s.heading.id));
+  }
+
+  const sectionOptions = sections.map((s) => ({ value: s.major, label: `${s.major}  ${s.heading ? s.heading.description : '(no heading)'}` }));
+  const rowStyle = { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderTopWidth: 1, borderTopColor: colors.border };
+
+  // One question row (or its inline edit form). A plain function, not a
+  // component, so typing in the edit box doesn't remount it and drop focus.
+  function renderQuestion(c) {
+    const isActive = c.active !== false;
+    if (editingId === c.id) {
+      return (
+        <View key={c.id} style={rowStyle}>
+          <SectionLabel>Edit {c.id}</SectionLabel>
+          <Field label="Description" value={eDescription} onChangeText={setEDescription} multiline />
+          <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
+        </View>
+      );
+    }
+    return (
+      <View key={c.id} style={[rowStyle, { flexDirection: 'row', alignItems: 'flex-start' }, !isActive ? { opacity: 0.55 } : null]}>
+        <Text style={{ width: 44, fontWeight: '700', color: colors.primary }}>{c.id}</Text>
+        <View style={{ flex: 1, paddingRight: spacing.xs }}>
+          <Text style={{ color: colors.text }}>{c.description}</Text>
+          {!isActive && <Text style={{ color: colors.red, fontWeight: '700', fontSize: 11 }}>INACTIVE</Text>}
+        </View>
+        <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => { setEditingId(c.id); setEDescription(c.description || ''); }} />
+        <IconButton
+          name={isActive ? 'pause-circle-outline' : 'play-circle-outline'}
+          color={isActive ? colors.amber : colors.green}
+          label={isActive ? 'Make inactive' : 'Reactivate'}
+          onPress={() => toggleActive(c)}
+        />
+        <IconButton
+          name="trash-outline"
+          color={colors.red}
+          label="Delete"
+          onPress={() => confirmDelete('Delete question', `Remove ${c.id}? If audits already use it, make it inactive instead.`, () => deleteRecord('auditCategories', c.id))}
+        />
+      </View>
+    );
+  }
+
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-      <ListHeader title="Audit categories" count={db.auditCategories.length} onAdd={() => setShowAdd(true)} addLabel="Add audit category" />
+      <ListHeader title="Audit categories" count={db.auditCategories.length} onAdd={() => openAdd('question', lastOpened)} addLabel="Add audit category" />
       <Field label="Filter" value={filter} onChangeText={setFilter} placeholder="Search by number or wording..." />
 
+      {sections.length > 1 && !q && (
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: spacing.sm }}>
+          <TouchableOpacity onPress={() => setOpen(Object.fromEntries(sections.map((s) => [s.major, true])))}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Expand all</Text>
+          </TouchableOpacity>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>{'   |   '}</Text>
+          <TouchableOpacity onPress={() => setOpen({})}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Collapse all</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <AddModal visible={showAdd} title="Add audit category" onClose={() => setShowAdd(false)}>
-        <Field
-          label="Category number"
-          value={number}
-          onChangeText={setNumber}
-          keyboardType="numbers-and-punctuation"
-          placeholder="e.g. 6 (heading) or 2.13 (question)"
-        />
+        <SectionLabel>What are you adding?</SectionLabel>
+        <View style={{ flexDirection: 'row', marginBottom: spacing.sm }}>
+          <Chip label="Question" active={kind === 'question'} onPress={() => changeKind('question')} />
+          <Chip label="Section heading" active={kind === 'heading'} onPress={() => changeKind('heading')} />
+        </View>
+        {kind === 'question' && (
+          <>
+            <SectionLabel>Section</SectionLabel>
+            <Select value={section} onSelect={changeSection} options={sectionOptions} placeholder="Choose section..." />
+          </>
+        )}
+        <Field label="Category number" value={number} onChangeText={setNumber} keyboardType="numbers-and-punctuation" />
         <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
-          A whole number is a section heading. A number with two decimals (2.13, 3.05) is a question under that section.
-          It can't be changed after saving.
+          The next free number is filled in for you. It can't be changed after saving.
         </Text>
         <Field label="Description" value={description} onChangeText={setDescription} placeholder="The heading or the question" multiline />
         <PrimaryButton title={saving ? 'Saving...' : 'Add category'} onPress={add} disabled={saving} />
       </AddModal>
 
-      {rows.length === 0 && (
+      {visible.length === 0 && (
         <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
-          {db.auditCategories.length === 0 ? 'No audit categories yet. Tap + to add one.' : 'No categories match your filter.'}
+          {db.auditCategories.length === 0 ? 'No audit categories yet. Tap + to add a section heading first.' : 'Nothing matches your filter.'}
         </Text>
       )}
 
-      {rows.map((c) => {
-        const heading = c.isHeading === true;
-        const isActive = c.active !== false;
-        return editingId === c.id ? (
-          <Card key={c.id}>
-            <SectionLabel>Edit category {c.id}</SectionLabel>
-            <Field label="Description" value={eDescription} onChangeText={setEDescription} multiline />
-            <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
-          </Card>
-        ) : (
-          <Card
-            key={c.id}
-            style={[heading ? { backgroundColor: colors.chipBg } : { marginLeft: spacing.lg }, !isActive ? { opacity: 0.6 } : null]}
-          >
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: spacing.sm }}>
-                <Text style={{ fontWeight: heading ? '800' : '600', color: colors.text }}>
-                  {c.id}  {c.description}
+      {visible.map((s) => {
+        const isOpen = s.forceOpen || !!open[s.major];
+        const h = s.heading;
+        const inactiveCount = s.questions.filter((c) => c.active === false).length;
+        return (
+          <Card key={s.major} style={{ padding: 0, overflow: 'hidden' }}>
+            <TouchableOpacity
+              onPress={() => (s.forceOpen ? null : toggleSection(s.major, isOpen))}
+              style={{ flexDirection: 'row', alignItems: 'center', padding: spacing.md, backgroundColor: colors.chipBg }}
+            >
+              <Ionicons name={isOpen ? 'chevron-down' : 'chevron-forward'} size={18} color={colors.primary} />
+              <View style={{ flex: 1, marginLeft: spacing.sm, paddingRight: spacing.xs }}>
+                <Text style={{ fontWeight: '800', color: colors.text }}>
+                  {s.major}  {h ? h.description : '(no heading)'}
                 </Text>
-                {!isActive && <Text style={{ color: colors.red, fontWeight: '700', fontSize: 11 }}>INACTIVE</Text>}
+                <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                  {s.questions.length} question{s.questions.length === 1 ? '' : 's'}
+                  {inactiveCount ? ` - ${inactiveCount} inactive` : ''}
+                  {h && h.active === false ? ' - heading inactive' : ''}
+                </Text>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                <IconButton
-                  name="create-outline"
-                  color={colors.primary}
-                  label="Edit"
-                  onPress={() => {
-                    setEditingId(c.id);
-                    setEDescription(c.description || '');
-                  }}
-                />
-                <IconButton
-                  name={isActive ? 'pause-circle-outline' : 'play-circle-outline'}
-                  color={isActive ? colors.amber : colors.green}
-                  label={isActive ? 'Make inactive' : 'Reactivate'}
-                  onPress={() => toggleActive(c)}
-                />
-                <IconButton
-                  name="trash-outline"
-                  color={colors.red}
-                  label="Delete"
-                  onPress={() => confirmDelete('Delete category', `Remove ${c.id}? If audits already use it, make it inactive instead.`, () => deleteRecord('auditCategories', c.id))}
-                />
-              </View>
-            </View>
+              <IconButton name="add-circle-outline" color={colors.primary} label="Add question" onPress={() => openAdd('question', s.major)} />
+            </TouchableOpacity>
+
+            {isOpen && (
+              <>
+                {h && (
+                  editingId === h.id ? (
+                    <View style={rowStyle}>
+                      <SectionLabel>Edit heading {h.id}</SectionLabel>
+                      <Field label="Description" value={eDescription} onChangeText={setEDescription} multiline />
+                      <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
+                    </View>
+                  ) : (
+                    <View style={[rowStyle, { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' }]}>
+                      <Text style={{ color: colors.textMuted, fontSize: 11, flex: 1 }}>Section {h.id}</Text>
+                      <IconButton name="create-outline" color={colors.primary} label="Edit heading" onPress={() => { setEditingId(h.id); setEDescription(h.description || ''); }} />
+                      <IconButton
+                        name={h.active === false ? 'play-circle-outline' : 'pause-circle-outline'}
+                        color={h.active === false ? colors.green : colors.amber}
+                        label={h.active === false ? 'Reactivate heading' : 'Make heading inactive'}
+                        onPress={() => toggleActive(h)}
+                      />
+                      <IconButton name="trash-outline" color={colors.red} label="Delete section" onPress={() => deleteSection(s)} />
+                    </View>
+                  )
+                )}
+                {s.shown.length === 0 ? (
+                  <View style={rowStyle}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>No questions yet. Tap the + above to add one.</Text>
+                  </View>
+                ) : (
+                  s.shown.map((c) => renderQuestion(c))
+                )}
+              </>
+            )}
           </Card>
         );
       })}
