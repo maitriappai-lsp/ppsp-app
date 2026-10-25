@@ -827,17 +827,14 @@ export function AllocationsTab() {
                   <Text style={{ fontWeight: '700', color: colors.text, flexShrink: 1 }}>{benLabel(ben)}</Text>
                   {!isActive && <Text style={{ color: colors.red, fontWeight: '700', fontSize: 11 }}>INACTIVE</Text>}
                 </View>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {a.id} - Resource 1: {resName(db, a.resource1Id)}
-                  {a.resource2Id ? ` - Resource 2: ${resName(db, a.resource2Id)}` : ''}
-                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12 }}>Resource 1: {resName(db, a.resource1Id)}</Text>
+                {a.resource2Id ? (
+                  <Text style={{ color: colors.textMuted, fontSize: 12 }}>Resource 2: {resName(db, a.resource2Id)}</Text>
+                ) : null}
                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                   From {a.fromDate || '--'} - Opens {a.opensAt || '--'} - Closes {a.closesAt || '--'}
                 </Text>
-                <Text style={{ color: colors.textMuted, fontSize: 11 }}>
-                  Updated {dateOnly(a.updatedAt)} by {a.updatedBy ? resName(db, a.updatedBy) : '--'}
-                  {a.updateRemarks ? ` - ${a.updateRemarks}` : ''}
-                </Text>
+                {a.updateRemarks ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>Remarks: {a.updateRemarks}</Text> : null}
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
                 <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(a)} />

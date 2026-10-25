@@ -42,6 +42,7 @@ const EMPTY_DB = {
   bookUpdate: [],
   dsr: [],
   dsrDetail: [],
+  dsrDetailStudents: [], // which students were on each DSR line
   audits: [],
   auditDetail: [],
   auditCategories: [], // read-only audit checklist (from audit_category_master)

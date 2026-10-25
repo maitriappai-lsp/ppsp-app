@@ -276,7 +276,6 @@ export default function ContentAdminScreen() {
 
         {rows.map((c) => {
           const m = db.materialMaster.find((x) => x.id === c.materialId);
-          const acts = m?.activities || [];
           return (
             <Card key={c.id}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -291,7 +290,6 @@ export default function ContentAdminScreen() {
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                         {materialTitle(m)} - {m.category}
                       </Text>
-                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>Activities: {acts.length ? acts.join(', ') : 'none'}</Text>
                     </>
                   ) : (
                     <Text style={{ color: colors.amber, fontSize: 12 }}>No material linked -- tap edit to link one.</Text>

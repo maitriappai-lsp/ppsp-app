@@ -1,9 +1,20 @@
 // SCREEN (Admin): Search.
 //
-// A generic search/view/export/delete tool across every data table in the
-// app (Geo, Attendance, Resources, Beneficiaries, Uploads, Content, and the PPSP tables: Allocations, Students, Materials,
-// Books, Stock, Book stock, DSR, DSR lines, Audits, Audit lines) -- one tab
-// per table, rather than a bespoke screen per table.
+// A generic search/view/export/delete tool across the app's data, in two
+// groups so it stays easy to find things:
+//
+//   Masters                    Geo, Beneficiaries, Resources, Allocations,
+//                              Uploads, Content, Students, Materials, Books,
+//                              Audit Checklist
+//   Beneficiary / Transactions Attendance, Material stock, Book stock,
+//                              DSR (with its lines), Audits (with its lines)
+//
+// The two big buttons at the top switch group; the chips under them switch
+// table within the group. A DSR or an Audit is ONE row whose header can be
+// opened to show its details and, underneath, its lines (the materials used,
+// or the checklist answers) -- the lines are not a separate tab. Exporting a
+// DSR / audit includes its lines as a second sheet, and deleting it removes
+// its lines too.
 //
 // Each tab has: a free-text search across every field of that table
 // (including resolved names for linked records, e.g. searching a
@@ -28,6 +39,7 @@ import React, { useMemo, useState } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, Alert, ActivityIndicator, FlatList } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import { Ionicons } from '@expo/vector-icons';
 import { useData } from '../../data/store';
 import { apiGet } from '../../data/api';
 import { Screen, Card, Chip, Field, DateField, PrimaryButton, SecondaryButton } from '../../components/UI';
@@ -117,6 +129,43 @@ function renderDetailValue(key, value, db) {
   if (Array.isArray(value)) return value.length ? value.join(', ') : '--';
   return String(value);
 }
+
+// ---- DSR / audit lines ------------------------------------------------------
+
+function dsrLines(db, dsrId) {
+  return (db.dsrDetail || []).filter((l) => l.dsrId === dsrId);
+}
+function lineStudentNames(db, lineId) {
+  return (db.dsrDetailStudents || [])
+    .filter((x) => x.dsrDetailId === lineId)
+    .map((x) => studentLabel(db, x.studentId));
+}
+function auditLines(db, auditId) {
+  const order = (no) => (db.auditCategories || []).find((c) => c.id === no)?.sortOrder ?? 0;
+  return (db.auditDetail || [])
+    .filter((l) => l.auditId === auditId)
+    .sort((a, b) => order(a.categoryNo) - order(b.categoryNo));
+}
+const FLAG_LABELS = { Y: 'Yes', N: 'No', NA: 'Not applicable', UN: 'Unknown to me' };
+
+const lineBox = { paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: colors.border };
+
+// ---- The two groups --------------------------------------------------------
+// `tables` are TABLE_CONFIGS keys, in the order their chips appear.
+const GROUPS = [
+  {
+    key: 'masters',
+    label: 'Masters',
+    icon: 'library-outline',
+    tables: ['geo', 'beneficiaries', 'resources', 'allocations', 'uploads', 'content', 'studentMaster', 'materialMaster', 'bookMaster', 'auditCategories'],
+  },
+  {
+    key: 'transactions',
+    label: 'Beneficiary / Transactions',
+    icon: 'swap-horizontal-outline',
+    tables: ['attendance', 'stockUpdate', 'bookUpdate', 'dsr', 'audits'],
+  },
+];
 
 // ---- Per-table configuration ----------------------------------------------
 // dbKey: the key in `db` (and the generic table name the API expects).
@@ -231,7 +280,7 @@ const TABLE_CONFIGS = [
   {
     key: 'stockUpdate',
     dbKey: 'stockUpdate',
-    label: 'Stock',
+    label: 'Material stock',
     dateField: 'lastUpdatedAt',
     searchText: (r, db) =>
       [beneficiaryLabel(db, r.beneficiaryId), materialLabel(db, r.materialId), r.qty, r.status, r.remarks, resourceName(db, r.lastUpdatedBy)]
@@ -268,18 +317,30 @@ const TABLE_CONFIGS = [
         r.eplMaterialsUsed,
         r.stockRemarks,
         r.remarks,
+        // so searching a material, activity or student finds the DSR they appear in
+        ...dsrLines(db, r.id).flatMap((l) => [materialFull(db, l.materialId), l.materialActivity, ...lineStudentNames(db, l.id)]),
       ]
         .filter(Boolean)
         .join(' '),
-    summary: (r, db) => `${resourceName(db, r.resourceId)} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.dsrDate} \u00b7 ${r.status}`,
-  },
-  {
-    key: 'dsrDetail',
-    dbKey: 'dsrDetail',
-    label: 'DSR lines',
-    dateField: null,
-    searchText: (r, db) => [r.dsrId, materialLabel(db, r.materialId), r.materialActivity, r.sessionPeriod === 'M' ? 'morning' : 'afternoon'].filter(Boolean).join(' '),
-    summary: (r, db) => `${r.dsrId} \u00b7 ${materialLabel(db, r.materialId)} \u00b7 ${r.materialActivity || '--'} \u00b7 ${r.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'}`,
+    summary: (r, db) =>
+      `${resourceName(db, r.resourceId)} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.dsrDate} \u00b7 ${r.status} \u00b7 ${dsrLines(db, r.id).length} line(s)`,
+    lines: {
+      label: 'Materials used',
+      defaultOpen: true,
+      rows: (item, db) => dsrLines(db, item.id),
+      render: (l, db) => {
+        const names = lineStudentNames(db, l.id);
+        return (
+          <View key={l.id} style={lineBox}>
+            <Text style={{ color: colors.text, fontSize: 12, fontWeight: '600' }}>
+              {materialLabel(db, l.materialId)}
+              {l.materialActivity ? ` \u00b7 ${l.materialActivity}` : ''} {'\u00b7'} {l.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'}
+            </Text>
+            <Text style={{ color: colors.textMuted, fontSize: 12 }}>Students: {names.length ? names.join(', ') : '--'}</Text>
+          </View>
+        );
+      },
+    },
   },
   {
     key: 'audits',
@@ -295,23 +356,33 @@ const TABLE_CONFIGS = [
         `visit ${r.visitNumber}`,
         r.status,
         r.visitRemarks,
+        // so searching a checklist wording or a remark finds the audit it belongs to
+        ...auditLines(db, r.id).flatMap((l) => [auditCategoryLabel(db, l.categoryNo), l.remarks]),
       ]
         .filter(Boolean)
         .join(' '),
-    summary: (r, db) => `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 Visit ${r.visitNumber} \u00b7 ${r.auditDate} \u00b7 ${r.status}`,
-  },
-  {
-    key: 'auditDetail',
-    dbKey: 'auditDetail',
-    label: 'Audit lines',
-    dateField: null,
-    searchText: (r, db) => [r.auditId, auditCategoryLabel(db, r.categoryNo), r.statusFlag, r.rating, r.remarks].filter(Boolean).join(' '),
-    summary: (r, db) => `${r.auditId} \u00b7 ${r.categoryNo} \u00b7 ${r.statusFlag || '--'}${r.rating ? ' \u00b7 Rating ' + r.rating : ''}`,
+    summary: (r, db) =>
+      `${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 Visit ${r.visitNumber} \u00b7 ${r.auditDate} \u00b7 ${r.status} \u00b7 ${auditLines(db, r.id).length} line(s)`,
+    lines: {
+      label: 'Checklist answers',
+      defaultOpen: false, // an audit can have 40+ lines
+      rows: (item, db) => auditLines(db, item.id),
+      render: (l, db) => (
+        <View key={l.id} style={lineBox}>
+          <Text style={{ color: colors.text, fontSize: 12, fontWeight: '600' }}>{auditCategoryLabel(db, l.categoryNo)}</Text>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+            {l.statusFlag ? FLAG_LABELS[l.statusFlag] || l.statusFlag : 'Not answered'}
+            {l.rating ? ` \u00b7 Rating ${l.rating}` : ''}
+            {l.remarks ? ` \u00b7 ${l.remarks}` : ''}
+          </Text>
+        </View>
+      ),
+    },
   },
   {
     key: 'auditCategories',
     dbKey: 'auditCategories',
-    label: 'Audit checklist',
+    label: 'Audit Checklist',
     dateField: null,
     searchText: (r) => [r.id, r.description, r.active === false ? 'inactive' : 'active'].filter(Boolean).join(' '),
     summary: (r) => `${r.id} \u00b7 ${r.description}${r.active === false ? ' \u00b7 Inactive' : ''}`,
@@ -320,7 +391,11 @@ const TABLE_CONFIGS = [
 
 export default function SearchScreen() {
   const { db, deleteRecord, refresh } = useData();
-  const [activeKey, setActiveKey] = useState(TABLE_CONFIGS[0].key);
+  const [activeKey, setActiveKey] = useState(GROUPS[0].tables[0]);
+  // The table last used in each group, so switching Masters <-> Transactions
+  // comes back to where you were.
+  const [lastTable, setLastTable] = useState(() => Object.fromEntries(GROUPS.map((g) => [g.key, g.tables[0]])));
+  const [linesOpen, setLinesOpen] = useState({});
   const [query, setQuery] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -329,8 +404,16 @@ export default function SearchScreen() {
   const [busy, setBusy] = useState(false);
 
   const config = TABLE_CONFIGS.find((c) => c.key === activeKey);
+  const group = GROUPS.find((g) => g.tables.includes(activeKey)) || GROUPS[0];
+
+  function switchGroup(groupKey) {
+    const g = GROUPS.find((x) => x.key === groupKey);
+    if (g && g.key !== group.key) switchTable(lastTable[g.key] || g.tables[0]);
+  }
 
   function switchTable(key) {
+    const g = GROUPS.find((x) => x.tables.includes(key));
+    if (g) setLastTable((prev) => ({ ...prev, [g.key]: key }));
     setActiveKey(key);
     setQuery('');
     setFromDate('');
@@ -546,13 +629,42 @@ export default function SearchScreen() {
     <Screen>
       <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.sm }}>Search</Text>
 
+      <View style={{ flexDirection: 'row', marginBottom: spacing.sm }}>
+        {GROUPS.map((g, idx) => {
+          const on = g.key === group.key;
+          return (
+            <TouchableOpacity
+              key={g.key}
+              onPress={() => switchGroup(g.key)}
+              style={{
+                flex: 1,
+                minHeight: 60,
+                marginRight: idx === 0 ? spacing.sm : 0,
+                paddingVertical: spacing.sm,
+                paddingHorizontal: spacing.sm,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: on ? colors.primary : colors.border,
+                backgroundColor: on ? colors.primary : colors.chipBg,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Ionicons name={g.icon} size={22} color={on ? '#fff' : colors.primary} />
+              <Text style={{ fontSize: 12, fontWeight: '700', textAlign: 'center', marginTop: 2, color: on ? '#fff' : colors.text }}>{g.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
         style={{ height: 40, flexGrow: 0, marginBottom: spacing.md }}
         contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
       >
-        {TABLE_CONFIGS.map((c) => {
+        {group.tables.map((key) => {
+          const c = TABLE_CONFIGS.find((t) => t.key === key);
           const active = c.key === activeKey;
           return (
             <TouchableOpacity
@@ -569,11 +681,8 @@ export default function SearchScreen() {
                 backgroundColor: active ? colors.primary : colors.chipBg,
               }}
             >
-              <Text
-                numberOfLines={1}
-                style={{ fontSize: 13, fontWeight: '600', color: active ? '#fff' : colors.text }}
-              >
-                {c.label}
+              <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '600', color: active ? '#fff' : colors.text }}>
+                {c.label} {(db[c.dbKey] || []).length}
               </Text>
             </TouchableOpacity>
           );
@@ -632,11 +741,13 @@ export default function SearchScreen() {
                     {selected && <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{'\u2713'}</Text>}
                   </View>
                 </TouchableOpacity>
-                <TouchableOpacity style={{ flex: 1 }} onPress={() => setExpandedId(expanded ? null : item.id)}>
-                  <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>{config.summary(item, db)}</Text>
-                  <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
-                    {expanded ? 'Hide details \u25be' : 'Show details \u25b8'}
-                  </Text>
+                <View style={{ flex: 1 }}>
+                  <TouchableOpacity onPress={() => setExpandedId(expanded ? null : item.id)}>
+                    <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>{config.summary(item, db)}</Text>
+                    <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
+                      {expanded ? 'Hide details \u25be' : 'Show details \u25b8'}
+                    </Text>
+                  </TouchableOpacity>
                   {expanded && (
                     <View style={{ marginTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm }}>
                       {Object.entries(item)
@@ -647,9 +758,33 @@ export default function SearchScreen() {
                             {renderDetailValue(k, v, db)}
                           </Text>
                         ))}
+
+                      {config.lines && (() => {
+                        const rows = config.lines.rows(item, db);
+                        const open = linesOpen[item.id] ?? config.lines.defaultOpen;
+                        return (
+                          <View style={{ marginTop: spacing.sm }}>
+                            <TouchableOpacity
+                              onPress={() => setLinesOpen((prev) => ({ ...prev, [item.id]: !open }))}
+                              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}
+                            >
+                              <Ionicons name={open ? 'chevron-down' : 'chevron-forward'} size={16} color={colors.primary} />
+                              <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12, marginLeft: 4 }}>
+                                {config.lines.label} ({rows.length})
+                              </Text>
+                            </TouchableOpacity>
+                            {open &&
+                              (rows.length === 0 ? (
+                                <Text style={{ color: colors.textMuted, fontSize: 12 }}>None recorded.</Text>
+                              ) : (
+                                rows.map((l) => config.lines.render(l, db))
+                              ))}
+                          </View>
+                        );
+                      })()}
                     </View>
                   )}
-                </TouchableOpacity>
+                </View>
               </View>
             </Card>
           );
