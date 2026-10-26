@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme';
 import AttendanceScreen from '../screens/facilitator/AttendanceScreen';
 import DsrScreen from '../screens/facilitator/DsrScreen';
+import UpdateScreen from '../screens/facilitator/UpdateScreen';
 import UploadsScreen from '../screens/facilitator/UploadsScreen';
 import DashboardScreen from '../screens/facilitator/DashboardScreen';
 import ContentScreen from '../screens/facilitator/ContentScreen';
@@ -13,12 +14,13 @@ const Tab = createBottomTabNavigator();
 const TAB_ICONS = {
   Attendance: 'location-outline',
   DSR: 'document-text-outline',
+  Update: 'create-outline',
   Uploads: 'cloud-upload-outline',
   Dashboard: 'stats-chart-outline',
   Content: 'book-outline',
 };
 
-// Bottom nav order: Attendance · DSR · Uploads · Dashboard · Content
+// Bottom nav order: Attendance · DSR · Update · Uploads · Dashboard · Content
 export default function FacilitatorTabs() {
   return (
     <Tab.Navigator
@@ -35,6 +37,7 @@ export default function FacilitatorTabs() {
     >
       <Tab.Screen name="Attendance" component={AttendanceScreen} />
       <Tab.Screen name="DSR" component={DsrScreen} />
+      <Tab.Screen name="Update" component={UpdateScreen} />
       <Tab.Screen name="Uploads" component={UploadsScreen} />
       <Tab.Screen name="Dashboard" component={DashboardScreen} />
       <Tab.Screen name="Content" component={ContentScreen} />
