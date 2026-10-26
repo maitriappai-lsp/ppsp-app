@@ -120,6 +120,7 @@ function renderDetailValue(key, value, db) {
   const resolver = FK_RESOLVERS[key];
   if (resolver) return resolver(db, value);
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (key === 'eplMaterialsUsed' && Array.isArray(value)) return value.length ? value.map((id) => materialLabel(db, id)).join(', ') : '--';
   if (Array.isArray(value)) return value.length ? value.join(', ') : '--';
   return String(value);
 }
@@ -309,7 +310,7 @@ const TABLE_CONFIGS = [
         r.bookRag,
         r.overallRag,
         (r.circleTimeActivities || []).join(' '),
-        r.eplMaterialsUsed,
+        ...(r.eplMaterialsUsed || []).map((id) => materialLabel(db, id)),
         r.stockRemarks,
         r.remarks,
         // so searching a material, activity or student finds the DSR they appear in

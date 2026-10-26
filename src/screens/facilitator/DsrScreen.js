@@ -2,17 +2,22 @@
 //
 // One DSR per facilitator per day. It can be SAVED as many times as needed
 // (a draft), but SUBMITTED only once; after that it is read-only here (an
-// Admin can still correct it from the dashboard). The report has a header
-// (time in, child counts, RAG ratings, circle time, remarks) and lines: for
-// each material used -- the activity (from the material master), whether it
-// was Morning or Afternoon, and which students worked on it.
+// Admin can still correct it from the dashboard).
 //
-// The beneficiary is the one the facilitator is currently allocated to, and
-// the student list is that beneficiary's. Everything is saved through the
-// backend's POST /api/dsr/save in one go (header + lines together), which
-// enforces the rules again on the server.
+// The report has a header and lines:
+//   * Date -- always today, shown but not editable.
+//   * Beneficiary -- defaults to the one the facilitator checked in at today
+//     (else the one they are allocated to) and can be changed, e.g. when
+//     covering another beneficiary. The student list follows the choice.
+//   * Time in, child counts, RAG ratings, circle time, remarks, and the EPL
+//     materials used (picked from the material master, category EPL).
+//   * Lines: for each material used -- Morning or Afternoon FIRST, then the
+//     material (grouped by category), its activity, and at least one student.
+//
+// Everything is saved through the backend's POST /api/dsr/save in one go
+// (header + lines together), which enforces the rules again on the server.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, Text, View, Alert, TouchableOpacity } from 'react-native';
+import { ScrollView, Text, View, Alert, TouchableOpacity, Modal, SectionList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
@@ -40,6 +45,8 @@ function benLabel(b) {
   return b ? `${b.school}${b.class ? ' - ' + b.class : ''}${b.section ? ' ' + b.section : ''}` : '--';
 }
 
+const isEpl = (m) => String(m.category || '').trim().toLowerCase() === 'epl';
+
 function RagPicker({ label, value, onChange }) {
   return (
     <View style={{ marginBottom: spacing.sm }}>
@@ -53,6 +60,101 @@ function RagPicker({ label, value, onChange }) {
   );
 }
 
+// A material dropdown whose list is grouped under its category headings
+// (Sensorial, Language Tamil, ...), with a search box.
+function MaterialPicker({ materials, value, onSelect, disabled, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const selected = materials.find((m) => m.id === value);
+
+  const sections = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const map = {};
+    materials.forEach((m) => {
+      if (needle && !`${m.category} ${m.name} ${m.type || ''}`.toLowerCase().includes(needle)) return;
+      const cat = m.category || '(no category)';
+      (map[cat] = map[cat] || []).push(m);
+    });
+    return Object.keys(map)
+      .sort((a, b) => a.localeCompare(b))
+      .map((cat) => ({
+        title: cat,
+        data: map[cat].sort((a, b) => (a.name || '').localeCompare(b.name || '') || (a.type || '').localeCompare(b.type || '')),
+      }));
+  }, [materials, q]);
+
+  function close() {
+    setOpen(false);
+    setQ('');
+  }
+
+  return (
+    <>
+      <TouchableOpacity
+        disabled={disabled}
+        onPress={() => setOpen(true)}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.card,
+          borderRadius: 10,
+          paddingHorizontal: spacing.md,
+          paddingVertical: spacing.md,
+          marginBottom: spacing.sm,
+          opacity: disabled ? 0.5 : 1,
+        }}
+      >
+        <Text style={{ flex: 1, color: selected ? colors.text : colors.textMuted }} numberOfLines={2}>
+          {selected ? `${selected.category} / ${materialText(selected)}` : placeholder}
+        </Text>
+        <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+      </TouchableOpacity>
+
+      <Modal visible={open} animationType="slide" transparent onRequestClose={close}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' }}>
+          <View style={{ backgroundColor: colors.bg, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: spacing.lg, maxHeight: '85%' }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>Choose material</Text>
+              <TouchableOpacity onPress={close} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={{ color: colors.textMuted, fontSize: 15, fontWeight: '700' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+            <Field placeholder="Search materials..." value={q} onChangeText={setQ} />
+            <SectionList
+              sections={sections}
+              keyExtractor={(m) => m.id}
+              keyboardShouldPersistTaps="handled"
+              stickySectionHeadersEnabled
+              ListEmptyComponent={<Text style={{ color: colors.textMuted, paddingVertical: spacing.md }}>No materials match.</Text>}
+              renderSectionHeader={({ section }) => (
+                <View style={{ backgroundColor: colors.chipBg, paddingVertical: 6, paddingHorizontal: spacing.md, borderRadius: 6, marginTop: spacing.xs }}>
+                  <Text style={{ fontWeight: '800', color: colors.text, fontSize: 12 }}>{section.title}</Text>
+                </View>
+              )}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  onPress={() => {
+                    onSelect(item.id);
+                    close();
+                  }}
+                  style={{ paddingVertical: spacing.md, paddingHorizontal: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border }}
+                >
+                  <Text style={{ color: item.id === value ? colors.primary : colors.text, fontWeight: item.id === value ? '800' : '500' }}>
+                    {materialText(item)}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 // Read-only view of a DSR (today's once submitted, and the history list).
 function DsrSummary({ dsr, db }) {
   const lines = db.dsrDetail.filter((l) => l.dsrId === dsr.id);
@@ -63,8 +165,10 @@ function DsrSummary({ dsr, db }) {
       {value === null || value === undefined || value === '' ? '--' : value}
     </Text>
   );
+  const eplNames = (dsr.eplMaterialsUsed || []).map((id) => materialText(db.materialMaster.find((m) => m.id === id))).join(', ');
   return (
     <View>
+      {row('Beneficiary', benLabel(db.beneficiaries.find((b) => b.id === dsr.beneficiaryId)))}
       {row('Facilitator time in', dsr.timeIn)}
       {row('Children at 9.30 am', dsr.childrenMorning)}
       {row('Active children 12.30 to 2 pm', dsr.childrenAfternoon)}
@@ -78,7 +182,7 @@ function DsrSummary({ dsr, db }) {
       </View>
       {dsr.stockRemarks ? row('Stock remarks', dsr.stockRemarks) : null}
       {row('Circle time', (dsr.circleTimeActivities || []).join(', '))}
-      {row('EPL materials used', dsr.eplMaterialsUsed)}
+      {row('EPL materials used', eplNames)}
       {dsr.remarks ? row('Remarks', dsr.remarks) : null}
 
       <Text style={{ fontWeight: '700', color: colors.text, marginTop: spacing.sm }}>Materials used ({lines.length})</Text>
@@ -92,8 +196,8 @@ function DsrSummary({ dsr, db }) {
         return (
           <View key={l.id} style={{ paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: colors.border }}>
             <Text style={{ color: colors.text, fontSize: 12, fontWeight: '600' }}>
-              {materialText(m)}
-              {l.materialActivity ? ` - ${l.materialActivity}` : ''} - {l.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'}
+              {l.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'} - {materialText(m)}
+              {l.materialActivity ? ` - ${l.materialActivity}` : ''}
             </Text>
             <Text style={muted}>Students: {names.length ? names.join(', ') : '--'}</Text>
           </View>
@@ -110,19 +214,37 @@ export default function DsrScreen() {
   const today = todayLocalYMD();
 
   const allocation = db.allocations.find((a) => a.active !== false && (a.resource1Id === me || a.resource2Id === me));
-  const beneficiary = allocation ? db.beneficiaries.find((b) => b.id === allocation.beneficiaryId) : null;
   const todaysDsr = db.dsr.find((d) => d.resourceId === me && d.dsrDate === today);
   const submitted = todaysDsr?.status === 'Submitted';
-  const students = useMemo(
-    () => db.studentMaster.filter((s) => s.beneficiaryId === allocation?.beneficiaryId).sort((a, b) => (a.name || '').localeCompare(b.name || '')),
-    [db.studentMaster, allocation?.beneficiaryId]
-  );
+
+  // Where the facilitator checked in today (latest check-in), else their allocation.
+  const checkedInBeneficiary = useMemo(() => {
+    const recs = db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId);
+    recs.sort((a, b) => String(b.timeIn || '').localeCompare(String(a.timeIn || '')));
+    return recs[0]?.beneficiaryId || '';
+  }, [db.attendance, me, today]);
+  const defaultBeneficiaryId = checkedInBeneficiary || allocation?.beneficiaryId || '';
+
   const timeInToday = useMemo(
     () => db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.timeIn).map((a) => a.timeIn).sort()[0] || '',
     [db.attendance, me, today]
   );
 
+  const beneficiaryOptions = useMemo(
+    () =>
+      db.beneficiaries
+        .slice()
+        .sort((a, b) => benLabel(a).localeCompare(benLabel(b)))
+        .map((b) => ({ value: b.id, label: benLabel(b) })),
+    [db.beneficiaries]
+  );
+  const eplMaterials = useMemo(
+    () => db.materialMaster.filter(isEpl).sort((a, b) => (a.name || '').localeCompare(b.name || '') || (a.type || '').localeCompare(b.type || '')),
+    [db.materialMaster]
+  );
+
   // ---- the form --------------------------------------------------------
+  const [beneficiaryId, setBeneficiaryId] = useState('');
   const [timeIn, setTimeIn] = useState('');
   const [childrenMorning, setChildrenMorning] = useState('');
   const [childrenAfternoon, setChildrenAfternoon] = useState('');
@@ -131,12 +253,18 @@ export default function DsrScreen() {
   const [bookRag, setBookRag] = useState('');
   const [overallRag, setOverallRag] = useState('');
   const [circleTime, setCircleTime] = useState([]);
-  const [epl, setEpl] = useState('');
+  const [epl, setEpl] = useState([]); // ids of EPL materials
   const [remarks, setRemarks] = useState('');
   const [lines, setLines] = useState([]); // { key, materialId, materialActivity, sessionPeriod, studentIds }
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState('');
   const [expandedPrev, setExpandedPrev] = useState(null);
+
+  const students = useMemo(
+    () => db.studentMaster.filter((s) => s.beneficiaryId === beneficiaryId).sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    [db.studentMaster, beneficiaryId]
+  );
+  const beneficiary = db.beneficiaries.find((b) => b.id === beneficiaryId);
 
   // Fill the form from today's saved DSR when it first becomes known (and
   // again if its status changes) -- but never overwrite what is being typed
@@ -147,6 +275,7 @@ export default function DsrScreen() {
     if (hydratedKey.current === key) return;
     hydratedKey.current = key;
     if (!todaysDsr) return;
+    setBeneficiaryId(todaysDsr.beneficiaryId || '');
     setTimeIn(todaysDsr.timeIn || '');
     setChildrenMorning(todaysDsr.childrenMorning === null || todaysDsr.childrenMorning === undefined ? '' : String(todaysDsr.childrenMorning));
     setChildrenAfternoon(todaysDsr.childrenAfternoon === null || todaysDsr.childrenAfternoon === undefined ? '' : String(todaysDsr.childrenAfternoon));
@@ -155,7 +284,7 @@ export default function DsrScreen() {
     setBookRag(todaysDsr.bookRag || '');
     setOverallRag(todaysDsr.overallRag || '');
     setCircleTime(todaysDsr.circleTimeActivities || []);
-    setEpl(todaysDsr.eplMaterialsUsed || '');
+    setEpl(todaysDsr.eplMaterialsUsed || []);
     setRemarks(todaysDsr.remarks || '');
     setLines(
       db.dsrDetail
@@ -170,41 +299,52 @@ export default function DsrScreen() {
     );
   }, [todaysDsr?.id, todaysDsr?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A brand-new report starts with the time-in from today's attendance.
+  // A brand-new report starts with the beneficiary the facilitator checked in
+  // at and the time-in from today's attendance.
   useEffect(() => {
-    if (!todaysDsr && !timeIn && timeInToday) setTimeIn(timeInToday);
-  }, [todaysDsr, timeIn, timeInToday]);
+    if (todaysDsr) return;
+    if (!beneficiaryId && defaultBeneficiaryId) setBeneficiaryId(defaultBeneficiaryId);
+    if (!timeIn && timeInToday) setTimeIn(timeInToday);
+  }, [todaysDsr, beneficiaryId, defaultBeneficiaryId, timeIn, timeInToday]);
+
+  function changeBeneficiary(id) {
+    if (id === beneficiaryId) return;
+    const hasStudents = lines.some((l) => l.studentIds.length > 0);
+    const apply = () => {
+      setBeneficiaryId(id);
+      // each beneficiary has its own students, so the picks on existing lines no longer apply
+      setLines((prev) => prev.map((l) => ({ ...l, studentIds: [] })));
+    };
+    if (!hasStudents) return apply();
+    Alert.alert('Change beneficiary?', "The students you picked on your material lines belong to the current beneficiary, so they'll be cleared and you'll need to pick them again.", [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Change', onPress: apply },
+    ]);
+  }
 
   // ---- line editor -----------------------------------------------------
   const [showLine, setShowLine] = useState(false);
   const [editingKey, setEditingKey] = useState(null);
+  const [lPeriod, setLPeriod] = useState('');
   const [lMaterialId, setLMaterialId] = useState('');
   const [lActivity, setLActivity] = useState('');
-  const [lPeriod, setLPeriod] = useState('');
   const [lStudents, setLStudents] = useState([]);
 
-  const materialOptions = useMemo(
-    () =>
-      db.materialMaster
-        .slice()
-        .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.name || '').localeCompare(b.name || '') || (a.type || '').localeCompare(b.type || ''))
-        .map((m) => ({ value: m.id, label: `${m.category} / ${materialText(m)}` })),
-    [db.materialMaster]
-  );
   const lMaterial = db.materialMaster.find((m) => m.id === lMaterialId);
 
   function openLine(line) {
     setEditingKey(line ? line.key : null);
+    setLPeriod(line ? line.sessionPeriod : '');
     setLMaterialId(line ? line.materialId : '');
     setLActivity(line ? line.materialActivity : '');
-    setLPeriod(line ? line.sessionPeriod : '');
     setLStudents(line ? line.studentIds : []);
     setShowLine(true);
   }
 
   function saveLine() {
+    if (!lPeriod) return Alert.alert('Morning or afternoon', 'Choose whether this was in the morning or the afternoon first.');
     if (!lMaterialId) return Alert.alert('Choose a material', 'Pick the material that was used.');
-    if (!lPeriod) return Alert.alert('Morning or afternoon', 'Choose whether this was in the morning or the afternoon.');
+    if (lStudents.length === 0) return Alert.alert('Choose students', 'Select at least one student who worked on this material.');
     const line = { key: editingKey || `new-${Date.now()}`, materialId: lMaterialId, materialActivity: lActivity, sessionPeriod: lPeriod, studentIds: lStudents };
     setLines((prev) => (editingKey ? prev.map((l) => (l.key === editingKey ? line : l)) : [...prev, line]));
     setShowLine(false);
@@ -217,6 +357,7 @@ export default function DsrScreen() {
   // ---- save / submit ---------------------------------------------------
   function missingForSubmit() {
     const missing = [];
+    if (!beneficiaryId) missing.push('Beneficiary');
     if (!timeIn) missing.push('Facilitator time in');
     if (childrenMorning === '') missing.push('Children at 9.30 am');
     if (childrenAfternoon === '') missing.push('Active children 12.30 to 2 pm');
@@ -227,12 +368,14 @@ export default function DsrScreen() {
   }
 
   async function send(submit) {
+    if (!beneficiaryId) return Alert.alert('Choose the beneficiary', 'Pick the beneficiary this DSR is for.');
     setSaving(true);
     try {
       await apiPost('/api/dsr/save', {
         date: today,
         submit,
         header: {
+          beneficiaryId,
           timeIn,
           childrenMorning,
           childrenAfternoon,
@@ -280,44 +423,50 @@ export default function DsrScreen() {
   );
 
   // ---- render ----------------------------------------------------------
-  if (!allocation) {
-    return (
-      <Screen>
-        <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.md }}>DSR</Text>
-        <Card>
-          <Text style={{ color: colors.text, fontWeight: '700', marginBottom: spacing.xs }}>You aren't assigned to a beneficiary yet</Text>
-          <Text style={{ color: colors.textMuted }}>Ask your admin to add you under Masters, Allocations. Then you can file your DSR here.</Text>
-        </Card>
-      </Screen>
-    );
-  }
-
   return (
     <Screen>
       <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.xs }}>DSR</Text>
 
       <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <Card>
-          <Text style={{ fontWeight: '700', color: colors.text }}>{benLabel(beneficiary)}</Text>
-          <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-            {today} -{' '}
-            {submitted ? 'Submitted' : todaysDsr ? 'Draft saved' : 'Not started'}
-            {savedAt && !submitted ? ` (saved ${savedAt})` : ''}
-          </Text>
-        </Card>
-
         {submitted ? (
           <Card>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
               <Ionicons name="checkmark-circle" size={20} color={colors.green} />
-              <Text style={{ color: colors.green, fontWeight: '700', marginLeft: spacing.xs }}>
-                Submitted. Today's DSR can't be edited. Ask your admin if something needs correcting.
+              <Text style={{ color: colors.green, fontWeight: '700', marginLeft: spacing.xs, flex: 1 }}>
+                Submitted for {today}. Today's DSR can't be edited. Ask your admin if something needs correcting.
               </Text>
             </View>
             <DsrSummary dsr={todaysDsr} db={db} />
           </Card>
         ) : (
           <>
+            <Card>
+              <SectionLabel>Date</SectionLabel>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  backgroundColor: colors.chipBg,
+                  borderRadius: 10,
+                  paddingHorizontal: spacing.md,
+                  paddingVertical: spacing.md,
+                  marginBottom: spacing.sm,
+                }}
+              >
+                <Text style={{ color: colors.text, fontWeight: '700' }}>{today}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                  Today only
+                  {savedAt ? ` - draft saved ${savedAt}` : todaysDsr ? ' - draft saved' : ''}
+                </Text>
+              </View>
+
+              <SectionLabel>Beneficiary</SectionLabel>
+              <Select value={beneficiaryId} onSelect={changeBeneficiary} options={beneficiaryOptions} placeholder="Choose beneficiary..." />
+              {checkedInBeneficiary && beneficiaryId === checkedInBeneficiary ? (
+                <Text style={{ color: colors.textMuted, fontSize: 11, marginBottom: spacing.sm }}>Where you checked in today. You can change it.</Text>
+              ) : null}
+            </Card>
+
             <Card>
               <SectionLabel>Today's report</SectionLabel>
               <TimeField label="Facilitator time in" value={timeIn} onChange={setTimeIn} />
@@ -349,7 +498,25 @@ export default function DsrScreen() {
                   />
                 ))}
               </View>
-              <Field label="EPL materials used" value={epl} onChangeText={setEpl} multiline />
+
+              <SectionLabel>EPL materials used</SectionLabel>
+              {eplMaterials.length === 0 ? (
+                <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
+                  There are no EPL materials yet. Ask your admin to add materials with the category EPL.
+                </Text>
+              ) : (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
+                  {eplMaterials.map((m) => (
+                    <Chip
+                      key={m.id}
+                      label={materialText(m)}
+                      active={epl.includes(m.id)}
+                      onPress={() => setEpl((prev) => (prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]))}
+                    />
+                  ))}
+                </View>
+              )}
+
               <Field label="Remarks (optional)" value={remarks} onChangeText={setRemarks} multiline />
             </Card>
 
@@ -365,12 +532,16 @@ export default function DsrScreen() {
                 return (
                   <View key={l.key} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingVertical: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border }}>
                     <View style={{ flex: 1, paddingRight: spacing.xs }}>
-                      <Text style={{ fontWeight: '700', color: colors.text }}>{materialText(m)}</Text>
+                      <Text style={{ fontWeight: '700', color: colors.text }}>
+                        {l.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'} - {materialText(m)}
+                      </Text>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                         {m?.category}
-                        {l.materialActivity ? ` - ${l.materialActivity}` : ''} - {l.sessionPeriod === 'M' ? 'Morning' : 'Afternoon'}
+                        {l.materialActivity ? ` - ${l.materialActivity}` : ''}
                       </Text>
-                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>Students: {names.length ? names.join(', ') : '--'}</Text>
+                      <Text style={{ color: names.length ? colors.textMuted : colors.red, fontSize: 12 }}>
+                        Students: {names.length ? names.join(', ') : 'none selected -- edit this line'}
+                      </Text>
                     </View>
                     <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => openLine(l)} />
                     <IconButton name="trash-outline" color={colors.red} label="Remove" onPress={() => setLines((prev) => prev.filter((x) => x.key !== l.key))} />
@@ -405,7 +576,7 @@ export default function DsrScreen() {
                     <View style={{ flex: 1, marginLeft: spacing.sm }}>
                       <Text style={{ fontWeight: '700', color: colors.text }}>{d.dsrDate}</Text>
                       <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                        {d.status === 'Submitted' ? 'Submitted' : 'Draft (never submitted)'}
+                        {benLabel(db.beneficiaries.find((b) => b.id === d.beneficiaryId))} - {d.status === 'Submitted' ? 'Submitted' : 'Draft (never submitted)'}
                       </Text>
                     </View>
                     {d.overallRag ? <RagChip rag={d.overallRag} /> : null}
@@ -423,15 +594,22 @@ export default function DsrScreen() {
       </ScrollView>
 
       <AddModal visible={showLine} title={editingKey ? 'Edit material' : 'Add material'} onClose={() => setShowLine(false)}>
-        <SectionLabel>Material</SectionLabel>
-        <Select
+        <SectionLabel>1. Morning or afternoon</SectionLabel>
+        <View style={{ flexDirection: 'row', marginBottom: spacing.sm }}>
+          <Chip label="Morning" active={lPeriod === 'M'} onPress={() => setLPeriod('M')} />
+          <Chip label="Afternoon" active={lPeriod === 'A'} onPress={() => setLPeriod('A')} />
+        </View>
+
+        <SectionLabel>2. Material</SectionLabel>
+        <MaterialPicker
+          materials={db.materialMaster}
           value={lMaterialId}
-          onSelect={(v) => {
-            if (v !== lMaterialId) setLActivity(''); // the activity list belongs to the material
-            setLMaterialId(v);
+          disabled={!lPeriod}
+          placeholder={lPeriod ? 'Choose material...' : 'Choose morning or afternoon first'}
+          onSelect={(id) => {
+            if (id !== lMaterialId) setLActivity(''); // the activity list belongs to the material
+            setLMaterialId(id);
           }}
-          options={materialOptions}
-          placeholder="Choose material..."
         />
         {lMaterial ? (
           (lMaterial.activities || []).length > 0 ? (
@@ -448,25 +626,21 @@ export default function DsrScreen() {
           )
         ) : null}
 
-        <SectionLabel>Morning or afternoon</SectionLabel>
-        <View style={{ flexDirection: 'row', marginBottom: spacing.sm }}>
-          <Chip label="Morning" active={lPeriod === 'M'} onPress={() => setLPeriod('M')} />
-          <Chip label="Afternoon" active={lPeriod === 'A'} onPress={() => setLPeriod('A')} />
-        </View>
-
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <SectionLabel>Students ({lStudents.length} selected)</SectionLabel>
+          <SectionLabel>3. Students ({lStudents.length} selected) - at least one</SectionLabel>
           {students.length > 0 && (
             <TouchableOpacity onPress={() => setLStudents(lStudents.length === students.length ? [] : students.map((s) => s.id))}>
               <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>{lStudents.length === students.length ? 'Clear all' : 'Select all'}</Text>
             </TouchableOpacity>
           )}
         </View>
-        {students.length === 0 && (
+        {!beneficiary ? (
+          <Text style={{ color: colors.red, fontSize: 12, marginBottom: spacing.sm }}>Choose the beneficiary on the DSR first. The student list comes from it.</Text>
+        ) : students.length === 0 ? (
           <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
-            There are no students on your beneficiary's list yet. Add them under the student list first.
+            There are no students on {benLabel(beneficiary)}'s list yet. Add them under Update, Students first.
           </Text>
-        )}
+        ) : null}
         {students.map((s) => {
           const checked = lStudents.includes(s.id);
           return (
