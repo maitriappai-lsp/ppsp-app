@@ -81,9 +81,14 @@ function CategoryChips({ categories, value, onPick }) {
   );
 }
 
+// Materials are shown grouped by their category: each category is a collapsible
+// bar with its material count and a "+" to add a material straight into it,
+// the same way the Audit Categories master is laid out.
 export function MaterialsTab() {
   const { db, addRecord, updateRecord, deleteRecord, nextId } = useData();
   const [filter, setFilter] = useState('');
+  const [open, setOpen] = useState({}); // category key (lower-case) -> expanded?
+  const [lastOpened, setLastOpened] = useState(''); // category name last expanded
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -98,27 +103,53 @@ export function MaterialsTab() {
   const [eType, setEType] = useState('');
   const [eActivities, setEActivities] = useState('');
 
-  const categories = useMemo(
-    () => [...new Set(db.materialMaster.map((m) => m.category).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
-    [db.materialMaster]
-  );
+  const keyOf = (c) => String(c || '').trim().toLowerCase();
 
-  const rows = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return db.materialMaster
-      .filter((m) => !q || [m.id, m.category, m.name, m.type, (m.activities || []).join(' ')].filter(Boolean).join(' ').toLowerCase().includes(q))
-      .slice()
-      .sort(
-        (a, b) =>
-          (a.category || '').localeCompare(b.category || '') ||
-          (a.name || '').localeCompare(b.name || '') ||
-          (a.type || '').localeCompare(b.type || '')
-      );
-  }, [db.materialMaster, filter]);
+  // One group per category (case-insensitive), materials sorted by name then type.
+  const groups = useMemo(() => {
+    const map = {};
+    db.materialMaster.forEach((m) => {
+      const key = keyOf(m.category);
+      const g = (map[key] = map[key] || { key, name: m.category || '(no category)', items: [] });
+      g.items.push(m);
+    });
+    const cmp = (a, b) => (a.name || '').localeCompare(b.name || '') || (a.type || '').localeCompare(b.type || '');
+    Object.values(map).forEach((g) => g.items.sort(cmp));
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  }, [db.materialMaster]);
+
+  const categories = useMemo(() => groups.map((g) => g.name), [groups]);
+
+  // With a filter, only matching categories show (and open up), listing just
+  // the matching materials unless the category name itself matched.
+  const q = filter.trim().toLowerCase();
+  const visible = useMemo(() => {
+    if (!q) return groups.map((g) => ({ ...g, shown: g.items, forceOpen: false }));
+    const hit = (m) => [m.name, m.type, (m.activities || []).join(' ')].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return groups
+      .map((g) => {
+        const shown = g.name.toLowerCase().includes(q) ? g.items : g.items.filter(hit);
+        return { ...g, shown, forceOpen: true };
+      })
+      .filter((g) => g.shown.length > 0);
+  }, [groups, q]);
 
   function isDuplicate(c, n, t, ignoreId) {
     const key = materialKey(c, n, t);
     return db.materialMaster.some((m) => m.id !== ignoreId && materialKey(m.category, m.name, m.type) === key);
+  }
+
+  function openAdd(cat) {
+    setCategory(cat || '');
+    setName('');
+    setType('');
+    setActivities('');
+    setShowAdd(true);
+  }
+
+  function toggleGroup(g, isOpen) {
+    setOpen((prev) => ({ ...prev, [g.key]: !isOpen }));
+    if (!isOpen) setLastOpened(g.name);
   }
 
   async function add() {
@@ -135,10 +166,9 @@ export function MaterialsTab() {
         type: type.trim(),
         activities: parseActivities(activities),
       });
-      Alert.alert('Saved', 'Material added.', [{ text: 'OK', onPress: () => setShowAdd(false) }]);
-      setName('');
-      setType('');
-      setActivities('');
+      setOpen((prev) => ({ ...prev, [keyOf(category)]: true }));
+      setLastOpened(category.trim());
+      setShowAdd(false);
     } catch (e) {
       showError('Could not add', e);
     } finally {
@@ -175,10 +205,61 @@ export function MaterialsTab() {
     }
   }
 
+  const rowStyle = { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderTopWidth: 1, borderTopColor: colors.border };
+
+  // One material row (or its inline edit form). A plain function, not a
+  // component, so typing in the edit boxes doesn't remount it and drop focus.
+  function renderMaterial(m) {
+    if (editingId === m.id) {
+      return (
+        <View key={m.id} style={rowStyle}>
+          <SectionLabel>Edit material</SectionLabel>
+          <Field label="Material category" value={eCategory} onChangeText={setECategory} />
+          <CategoryChips categories={categories} value={eCategory} onPick={setECategory} />
+          <Field label="Material name" value={eName} onChangeText={setEName} />
+          <Field label="Material type (optional)" value={eType} onChangeText={setEType} />
+          <Field label="Material activities (optional)" value={eActivities} onChangeText={setEActivities} autoCapitalize="characters" placeholder="Comma separated, e.g. P, M1, M2" />
+          <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
+        </View>
+      );
+    }
+    const acts = m.activities || [];
+    return (
+      <View key={m.id} style={[rowStyle, { flexDirection: 'row', alignItems: 'flex-start' }]}>
+        <View style={{ flex: 1, paddingRight: spacing.xs }}>
+          <Text style={{ fontWeight: '700', color: colors.text }}>
+            {m.name}
+            {m.type ? ` (${m.type})` : ''}
+          </Text>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>Activities: {acts.length ? acts.join(', ') : 'none'}</Text>
+        </View>
+        <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(m)} />
+        <IconButton
+          name="trash-outline"
+          color={colors.red}
+          label="Delete"
+          onPress={() => confirmDelete('Delete material', `Remove ${m.name}${m.type ? ' (' + m.type + ')' : ''}?`, () => deleteRecord('materialMaster', m.id))}
+        />
+      </View>
+    );
+  }
+
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-      <ListHeader title="Materials" count={db.materialMaster.length} onAdd={() => setShowAdd(true)} addLabel="Add material" />
+      <ListHeader title="Materials" count={db.materialMaster.length} onAdd={() => openAdd(lastOpened)} addLabel="Add material" />
       <Field label="Filter" value={filter} onChangeText={setFilter} placeholder="Search by category, name, type or activity..." />
+
+      {groups.length > 1 && !q && (
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: spacing.sm }}>
+          <TouchableOpacity onPress={() => setOpen(Object.fromEntries(groups.map((g) => [g.key, true])))}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Expand all</Text>
+          </TouchableOpacity>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>{'   |   '}</Text>
+          <TouchableOpacity onPress={() => setOpen({})}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Collapse all</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <AddModal visible={showAdd} title="Add material" onClose={() => setShowAdd(false)}>
         <Field label="Material category" value={category} onChangeText={setCategory} placeholder="e.g. Sensorial" />
@@ -198,51 +279,33 @@ export function MaterialsTab() {
         <PrimaryButton title={saving ? 'Saving...' : 'Add material'} onPress={add} disabled={saving} />
       </AddModal>
 
-      {rows.length === 0 && (
+      {visible.length === 0 && (
         <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
           {db.materialMaster.length === 0 ? 'No materials yet. Tap + to add one, or import a sheet below.' : 'No materials match your filter.'}
         </Text>
       )}
 
-      {rows.map((m) =>
-        editingId === m.id ? (
-          <Card key={m.id}>
-            <SectionLabel>Edit material {m.id}</SectionLabel>
-            <Field label="Material category" value={eCategory} onChangeText={setECategory} />
-            <CategoryChips categories={categories} value={eCategory} onPick={setECategory} />
-            <Field label="Material name" value={eName} onChangeText={setEName} />
-            <Field label="Material type (optional)" value={eType} onChangeText={setEType} />
-            <Field label="Material activities (optional)" value={eActivities} onChangeText={setEActivities} autoCapitalize="characters" placeholder="Comma separated, e.g. P, M1, M2" />
-            <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
-          </Card>
-        ) : (
-          <Card key={m.id}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: spacing.sm }}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>
-                  {m.name}
-                  {m.type ? ` (${m.type})` : ''}
-                </Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {m.id} - {m.category}
-                </Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  Activities: {(m.activities || []).length ? m.activities.join(', ') : 'none'}
+      {visible.map((g) => {
+        const isOpen = g.forceOpen || !!open[g.key];
+        return (
+          <Card key={g.key} style={{ padding: 0, overflow: 'hidden' }}>
+            <TouchableOpacity
+              onPress={() => (g.forceOpen ? null : toggleGroup(g, isOpen))}
+              style={{ flexDirection: 'row', alignItems: 'center', padding: spacing.md, backgroundColor: colors.chipBg }}
+            >
+              <Ionicons name={isOpen ? 'chevron-down' : 'chevron-forward'} size={18} color={colors.primary} />
+              <View style={{ flex: 1, marginLeft: spacing.sm, paddingRight: spacing.xs }}>
+                <Text style={{ fontWeight: '800', color: colors.text }}>{g.name}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                  {g.items.length} material{g.items.length === 1 ? '' : 's'}
                 </Text>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(m)} />
-                <IconButton
-                  name="trash-outline"
-                  color={colors.red}
-                  label="Delete"
-                  onPress={() => confirmDelete('Delete material', `Remove ${m.name}${m.type ? ' (' + m.type + ')' : ''}?`, () => deleteRecord('materialMaster', m.id))}
-                />
-              </View>
-            </View>
+              <IconButton name="add-circle-outline" color={colors.primary} label="Add material" onPress={() => openAdd(g.name)} />
+            </TouchableOpacity>
+            {isOpen && g.shown.map((m) => renderMaterial(m))}
           </Card>
-        )
-      )}
+        );
+      })}
 
       <ImportFromExcel
         label="materials"
