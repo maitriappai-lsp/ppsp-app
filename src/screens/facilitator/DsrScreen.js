@@ -29,6 +29,7 @@ import { enqueue, removeEntry, syncOutbox, useDsrOutbox, loadLocalDraft, saveLoc
 import { todayLocalYMD, nowHHMM } from '../../utils/date';
 import { Screen, Card, Field, Select, TimeField, Chip, RagChip, PrimaryButton, SecondaryButton, SectionLabel } from '../../components/UI';
 import { AddModal, IconButton } from '../../components/MasterParts';
+import MultiSelect from '../../components/MultiSelect';
 import { colors, spacing, ragColor } from '../../theme';
 
 const RAGS = ['Green', 'Amber', 'Red'];
@@ -688,34 +689,23 @@ export default function DsrScreen() {
               <RagPicker label="Overall day RAG rating" value={form.overallRag} onChange={(v) => patch({ overallRag: v })} />
 
               <SectionLabel>Circle time activities</SectionLabel>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
-                {CIRCLE_TIME.map((a) => (
-                  <Chip
-                    key={a}
-                    label={a}
-                    active={form.circleTime.includes(a)}
-                    onPress={() => setForm((f) => ({ ...f, circleTime: f.circleTime.includes(a) ? f.circleTime.filter((x) => x !== a) : [...f.circleTime, a] }))}
-                  />
-                ))}
-              </View>
+              <MultiSelect
+                title="Circle time activities"
+                options={CIRCLE_TIME.map((a) => ({ value: a, label: a }))}
+                values={form.circleTime}
+                onChange={(v) => patch({ circleTime: v })}
+                placeholder="Choose activities..."
+              />
 
               <SectionLabel>EPL materials used</SectionLabel>
-              {eplMaterials.length === 0 ? (
-                <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
-                  There are no EPL materials yet. Ask your admin to add materials with the category EPL.
-                </Text>
-              ) : (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
-                  {eplMaterials.map((m) => (
-                    <Chip
-                      key={m.id}
-                      label={materialText(m)}
-                      active={form.epl.includes(m.id)}
-                      onPress={() => setForm((f) => ({ ...f, epl: f.epl.includes(m.id) ? f.epl.filter((x) => x !== m.id) : [...f.epl, m.id] }))}
-                    />
-                  ))}
-                </View>
-              )}
+              <MultiSelect
+                title="EPL materials used"
+                options={eplMaterials.map((m) => ({ value: m.id, label: materialText(m) }))}
+                values={form.epl}
+                onChange={(v) => patch({ epl: v })}
+                placeholder="Choose EPL materials..."
+                emptyText="There are no EPL materials yet. Ask your admin to add materials with the category EPL."
+              />
 
               <Field label="Remarks (optional)" value={form.remarks} onChangeText={(v) => patch({ remarks: v })} multiline />
             </Card>
