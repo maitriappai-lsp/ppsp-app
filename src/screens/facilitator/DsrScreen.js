@@ -10,11 +10,15 @@
 // the uploader in navigation/FacilitatorTabs.js). A DSR submitted offline is
 // locked straight away ("Submitted on this phone"), just like an online one.
 //
+// A DSR can only be filled in for a beneficiary the facilitator has an ATTENDANCE
+// record at today (they must have timed in there). The Beneficiary dropdown lists
+// only those; with none, the screen asks them to mark attendance first.
+//
 // The report has a header and lines:
 //   * Date -- always today, shown but not editable.
-//   * Beneficiary -- defaults to the one the facilitator checked in at today
-//     (else the one they are allocated to) and can be changed. Each
-//     beneficiary has its OWN DSR for the day; switching shows that one.
+//   * Beneficiary -- one of the beneficiaries the facilitator timed in at today
+//     (defaulting to the latest). Each beneficiary has its OWN DSR for the day;
+//     switching shows that one.
 //   * Time in, child counts, RAG ratings, circle time, remarks, and the EPL
 //     materials used (picked from the material master, category EPL).
 //   * Lines: for each material used -- Morning or Afternoon FIRST, then the
@@ -308,35 +312,34 @@ function DsrSummary({ dsr, db, lines: linesOverride }) {
   );
 }
 
-export default function DsrScreen() {
+export default function DsrScreen({ navigation }) {
   const { currentUser } = useAuth();
   const { db, refresh, offline } = useData();
   const outbox = useDsrOutbox();
   const me = currentUser?.id;
   const today = todayLocalYMD();
 
-  const allocation = db.allocations.find((a) => a.active !== false && (a.resource1Id === me || a.resource2Id === me));
+  // The beneficiaries this facilitator has timed in at today -- the only ones a DSR can be filed for.
+  const attendedBeneficiaryIds = useMemo(
+    () => [...new Set(db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId).map((a) => a.beneficiaryId))],
+    [db.attendance, me, today]
+  );
+  const hasAttendanceToday = attendedBeneficiaryIds.length > 0;
 
-  // Where the facilitator checked in today (latest check-in), else their allocation.
-  const checkedInBeneficiary = useMemo(() => {
+  // The latest check-in is the default.
+  const defaultBeneficiaryId = useMemo(() => {
     const recs = db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId);
     recs.sort((a, b) => String(b.timeIn || '').localeCompare(String(a.timeIn || '')));
     return recs[0]?.beneficiaryId || '';
   }, [db.attendance, me, today]);
-  const defaultBeneficiaryId = checkedInBeneficiary || allocation?.beneficiaryId || '';
-
-  const timeInToday = useMemo(
-    () => db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.timeIn).map((a) => a.timeIn).sort()[0] || '',
-    [db.attendance, me, today]
-  );
 
   const beneficiaryOptions = useMemo(
     () =>
       db.beneficiaries
-        .slice()
+        .filter((b) => attendedBeneficiaryIds.includes(b.id))
         .sort((a, b) => benLabel(a).localeCompare(benLabel(b)))
         .map((b) => ({ value: b.id, label: benLabel(b) })),
-    [db.beneficiaries]
+    [db.beneficiaries, attendedBeneficiaryIds]
   );
   const eplMaterials = useMemo(
     () => db.materialMaster.filter(isEpl).sort((a, b) => (a.name || '').localeCompare(b.name || '') || (a.type || '').localeCompare(b.type || '')),
@@ -346,6 +349,16 @@ export default function DsrScreen() {
   // ---- which DSR this is: facilitator + date + beneficiary -------------
   const [beneficiaryId, setBeneficiaryId] = useState('');
   const beneficiary = db.beneficiaries.find((b) => b.id === beneficiaryId);
+
+  // Time in at the chosen beneficiary today (the earliest, if they timed in more than once).
+  const timeInToday = useMemo(
+    () =>
+      db.attendance
+        .filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId === beneficiaryId && a.timeIn)
+        .map((a) => a.timeIn)
+        .sort()[0] || '',
+    [db.attendance, me, today, beneficiaryId]
+  );
   const key = me && beneficiaryId ? `${me}|${today}|${beneficiaryId}` : '';
 
   const serverDsr = db.dsr.find((d) => d.resourceId === me && d.dsrDate === today && d.beneficiaryId === beneficiaryId);
@@ -370,10 +383,12 @@ export default function DsrScreen() {
   const [savedAt, setSavedAt] = useState('');
   const [expandedPrev, setExpandedPrev] = useState(null);
 
-  // Pick the beneficiary for a brand-new session.
+  // Start on the latest check-in; if the current choice isn't one of today's
+  // check-ins (e.g. that attendance was removed), move to one that is.
   useEffect(() => {
-    if (!beneficiaryId && defaultBeneficiaryId) setBeneficiaryId(defaultBeneficiaryId);
-  }, [beneficiaryId, defaultBeneficiaryId]);
+    if (!defaultBeneficiaryId) return;
+    if (!beneficiaryId || !attendedBeneficiaryIds.includes(beneficiaryId)) setBeneficiaryId(defaultBeneficiaryId);
+  }, [beneficiaryId, defaultBeneficiaryId, attendedBeneficiaryIds]);
 
   // Load the form for this DSR. Newest information wins: a copy waiting in the
   // upload queue, else the draft kept on the phone (if newer than the server's
@@ -571,6 +586,7 @@ export default function DsrScreen() {
 
   // ---- render ----------------------------------------------------------
   const queuedView = queuedSubmit ? summaryFromBody(queued.body) : null;
+  const needsAttendance = !hasAttendanceToday && !serverSubmitted && !queuedSubmit;
 
   return (
     <Screen>
@@ -610,6 +626,19 @@ export default function DsrScreen() {
           </Card>
         ) : null}
 
+        {needsAttendance ? (
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
+              <Ionicons name="alert-circle-outline" size={22} color={colors.amber} />
+              <Text style={{ color: colors.text, fontWeight: '700', marginLeft: spacing.sm, flex: 1 }}>Mark your attendance first</Text>
+            </View>
+            <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
+              A DSR can only be filled in for a beneficiary you've timed in at. Mark your attendance for {today}, then come back here.
+            </Text>
+            <PrimaryButton title="Go to Attendance" onPress={() => navigation?.navigate('Attendance')} />
+          </Card>
+        ) : (
+          <>
         <Card>
           <SectionLabel>Date</SectionLabel>
           <View
@@ -632,9 +661,9 @@ export default function DsrScreen() {
 
           <SectionLabel>Beneficiary</SectionLabel>
           <Select value={beneficiaryId} onSelect={changeBeneficiary} options={beneficiaryOptions} placeholder="Choose beneficiary..." />
-          {checkedInBeneficiary && beneficiaryId === checkedInBeneficiary ? (
-            <Text style={{ color: colors.textMuted, fontSize: 11 }}>Where you checked in today. You can change it; each beneficiary has its own DSR.</Text>
-          ) : null}
+          <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+            Only beneficiaries you've timed in at today are listed. Each beneficiary has its own DSR.
+          </Text>
           {db.beneficiaries.length === 0 ? (
             <Text style={{ color: colors.red, fontSize: 12 }}>
               No beneficiaries are loaded yet. Connect to the internet once so the app can load its lists.
@@ -751,6 +780,9 @@ export default function DsrScreen() {
             <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
               Save as often as you like, online or offline. Submit once per beneficiary per day. After that it can't be edited.
             </Text>
+          </>
+        )}
+
           </>
         )}
 
