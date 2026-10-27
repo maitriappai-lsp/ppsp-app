@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiGet, apiPost, apiPatch, apiDelete } from './api';
 import { useAuth } from '../context/AuthContext';
 
@@ -64,6 +65,9 @@ export function DataProvider({ children }) {
   const [db, setDb] = useState(EMPTY_DB);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
+  // True while the server can't be reached; the app then shows the copy of
+  // the data saved on the phone at the last successful load.
+  const [offline, setOffline] = useState(false);
 
   // Bookkeeping for the background refresh below.
   const writesInFlightRef = useRef(0);
@@ -71,10 +75,20 @@ export function DataProvider({ children }) {
   const pollInFlightRef = useRef(false);
   const lastSnapshotRef = useRef(null);
 
+  // The last good copy of the server data is kept on the phone so the app can
+  // still start, and the facilitator can keep working, with no signal.
+  const cacheKey = () => `ppsp-db-cache-v1:${currentUser?.id}`;
+  function saveCache(snapshot) {
+    AsyncStorage.setItem(cacheKey(), snapshot).catch(() => {});
+  }
+
   async function refresh() {
     const fresh = await apiGet('/api/db');
-    lastSnapshotRef.current = JSON.stringify(fresh);
+    const snapshot = JSON.stringify(fresh);
+    lastSnapshotRef.current = snapshot;
     setDb(fresh);
+    setOffline(false);
+    saveCache(snapshot);
     return fresh;
   }
 
@@ -101,13 +115,16 @@ export function DataProvider({ children }) {
     const versionAtStart = writeVersionRef.current;
     try {
       const fresh = await apiGet('/api/db');
+      setOffline(false);
       if (writeVersionRef.current !== versionAtStart) return;
       const snapshot = JSON.stringify(fresh);
       if (snapshot !== lastSnapshotRef.current) {
         lastSnapshotRef.current = snapshot;
         setDb(fresh);
+        saveCache(snapshot);
       }
     } catch (e) {
+      if (e?.isNetworkError) setOffline(true);
       console.warn('Background refresh failed', e?.message || e);
     } finally {
       pollInFlightRef.current = false;
@@ -141,7 +158,22 @@ export function DataProvider({ children }) {
         await refresh();
       } catch (e) {
         console.warn('Failed to load data from backend', e);
-        setError(e);
+        // No connection: fall back to the copy saved on the phone, if any.
+        let usedCache = false;
+        if (e?.isNetworkError) {
+          try {
+            const cached = await AsyncStorage.getItem(cacheKey());
+            if (cached) {
+              lastSnapshotRef.current = cached;
+              setDb({ ...EMPTY_DB, ...JSON.parse(cached) });
+              setOffline(true);
+              usedCache = true;
+            }
+          } catch (cacheErr) {
+            console.warn('Could not read the saved copy', cacheErr);
+          }
+        }
+        if (!usedCache) setError(e);
       } finally {
         setLoaded(true);
       }
@@ -153,6 +185,7 @@ export function DataProvider({ children }) {
       db,
       loaded,
       error,
+      offline,
       refresh,
 
       // ---- generic master helpers -------------------------------------
@@ -246,7 +279,7 @@ export function DataProvider({ children }) {
       getBook: (id) => db.bookMaster.find((b) => b.id === id),
       getStudent: (id) => db.studentMaster.find((s) => s.id === id),
     }),
-    [db, loaded, error]
+    [db, loaded, error, offline]
   );
 
   return <DataContext.Provider value={api}>{children}</DataContext.Provider>;

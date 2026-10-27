@@ -1,27 +1,31 @@
 // SCREEN (Facilitator): DSR -- the Daily Status Report.
 //
-// One DSR per facilitator per day. It can be SAVED as many times as needed
-// (a draft), but SUBMITTED only once; after that it is read-only here (an
-// Admin can still correct it from the dashboard).
+// One DSR per facilitator, per beneficiary, per day. It can be SAVED as many
+// times as needed (a draft), but SUBMITTED only once; after that it is
+// read-only here (an Admin can still correct it from the dashboard).
+//
+// WORKS OFFLINE. What is typed is kept on the phone as you go. Save or Submit
+// with no connection and the DSR is put in a queue on the phone and uploaded
+// automatically when the connection returns (see ../../data/dsrOutbox.js and
+// the uploader in navigation/FacilitatorTabs.js). A DSR submitted offline is
+// locked straight away ("Submitted on this phone"), just like an online one.
 //
 // The report has a header and lines:
 //   * Date -- always today, shown but not editable.
 //   * Beneficiary -- defaults to the one the facilitator checked in at today
-//     (else the one they are allocated to) and can be changed, e.g. when
-//     covering another beneficiary. The student list follows the choice.
+//     (else the one they are allocated to) and can be changed. Each
+//     beneficiary has its OWN DSR for the day; switching shows that one.
 //   * Time in, child counts, RAG ratings, circle time, remarks, and the EPL
 //     materials used (picked from the material master, category EPL).
 //   * Lines: for each material used -- Morning or Afternoon FIRST, then the
 //     material (grouped by category), its activity, and at least one student.
-//
-// Everything is saved through the backend's POST /api/dsr/save in one go
-// (header + lines together), which enforces the rules again on the server.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, Text, View, Alert, TouchableOpacity, Modal, SectionList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
 import { apiPost } from '../../data/api';
+import { enqueue, removeEntry, syncOutbox, useDsrOutbox, loadLocalDraft, saveLocalDraft, clearLocalDraft } from '../../data/dsrOutbox';
 import { todayLocalYMD, nowHHMM } from '../../utils/date';
 import { Screen, Card, Field, Select, TimeField, Chip, RagChip, PrimaryButton, SecondaryButton, SectionLabel } from '../../components/UI';
 import { AddModal, IconButton } from '../../components/MasterParts';
@@ -46,6 +50,100 @@ function benLabel(b) {
 }
 
 const isEpl = (m) => String(m.category || '').trim().toLowerCase() === 'epl';
+
+// ---- the form's shape, and converting to/from the other shapes ------------
+
+const emptyForm = () => ({
+  timeIn: '',
+  childrenMorning: '',
+  childrenAfternoon: '',
+  stockRag: '',
+  stockRemarks: '',
+  bookRag: '',
+  overallRag: '',
+  circleTime: [],
+  epl: [],
+  remarks: '',
+  lines: [], // { key, materialId, materialActivity, sessionPeriod, studentIds }
+});
+
+const numText = (v) => (v === null || v === undefined ? '' : String(v));
+
+function formFromServer(d, db) {
+  return {
+    timeIn: d.timeIn || '',
+    childrenMorning: numText(d.childrenMorning),
+    childrenAfternoon: numText(d.childrenAfternoon),
+    stockRag: d.stockRag || '',
+    stockRemarks: d.stockRemarks || '',
+    bookRag: d.bookRag || '',
+    overallRag: d.overallRag || '',
+    circleTime: d.circleTimeActivities || [],
+    epl: d.eplMaterialsUsed || [],
+    remarks: d.remarks || '',
+    lines: db.dsrDetail
+      .filter((l) => l.dsrId === d.id)
+      .map((l) => ({
+        key: l.id,
+        materialId: l.materialId,
+        materialActivity: l.materialActivity || '',
+        sessionPeriod: l.sessionPeriod,
+        studentIds: db.dsrDetailStudents.filter((x) => x.dsrDetailId === l.id).map((x) => x.studentId),
+      })),
+  };
+}
+
+function formFromBody(body) {
+  const h = body.header || {};
+  return {
+    timeIn: h.timeIn || '',
+    childrenMorning: numText(h.childrenMorning),
+    childrenAfternoon: numText(h.childrenAfternoon),
+    stockRag: h.stockRag || '',
+    stockRemarks: h.stockRemarks || '',
+    bookRag: h.bookRag || '',
+    overallRag: h.overallRag || '',
+    circleTime: h.circleTimeActivities || [],
+    epl: h.eplMaterialsUsed || [],
+    remarks: h.remarks || '',
+    lines: (body.lines || []).map((l, i) => ({
+      key: `q-${i}`,
+      materialId: l.materialId,
+      materialActivity: l.materialActivity || '',
+      sessionPeriod: l.sessionPeriod,
+      studentIds: l.studentIds || [],
+    })),
+  };
+}
+
+// What DsrSummary needs, built from a queued request body.
+function summaryFromBody(body) {
+  const h = body.header || {};
+  const num = (v) => (v === '' || v === undefined || v === null ? null : Number(v));
+  return {
+    dsr: {
+      id: 'queued',
+      beneficiaryId: h.beneficiaryId,
+      timeIn: h.timeIn,
+      childrenMorning: num(h.childrenMorning),
+      childrenAfternoon: num(h.childrenAfternoon),
+      stockRag: h.stockRag,
+      stockRemarks: h.stockRemarks,
+      bookRag: h.bookRag,
+      overallRag: h.overallRag,
+      circleTimeActivities: h.circleTimeActivities || [],
+      eplMaterialsUsed: h.eplMaterialsUsed || [],
+      remarks: h.remarks,
+    },
+    lines: (body.lines || []).map((l, i) => ({
+      id: `q-${i}`,
+      materialId: l.materialId,
+      materialActivity: l.materialActivity,
+      sessionPeriod: l.sessionPeriod,
+      studentIds: l.studentIds || [],
+    })),
+  };
+}
 
 function RagPicker({ label, value, onChange }) {
   return (
@@ -155,9 +253,14 @@ function MaterialPicker({ materials, value, onSelect, disabled, placeholder }) {
   );
 }
 
-// Read-only view of a DSR (today's once submitted, and the history list).
-function DsrSummary({ dsr, db }) {
-  const lines = db.dsrDetail.filter((l) => l.dsrId === dsr.id);
+// Read-only view of a DSR: a saved one (lines come from the database) or a
+// queued one (lines are passed in).
+function DsrSummary({ dsr, db, lines: linesOverride }) {
+  const lines =
+    linesOverride ||
+    db.dsrDetail
+      .filter((l) => l.dsrId === dsr.id)
+      .map((l) => ({ ...l, studentIds: db.dsrDetailStudents.filter((x) => x.dsrDetailId === l.id).map((x) => x.studentId) }));
   const muted = { color: colors.textMuted, fontSize: 12 };
   const row = (label, value) => (
     <Text style={{ color: colors.text, fontSize: 12, marginBottom: 2 }}>
@@ -188,10 +291,7 @@ function DsrSummary({ dsr, db }) {
       <Text style={{ fontWeight: '700', color: colors.text, marginTop: spacing.sm }}>Materials used ({lines.length})</Text>
       {lines.length === 0 ? <Text style={muted}>None recorded.</Text> : null}
       {lines.map((l) => {
-        const names = db.dsrDetailStudents
-          .filter((x) => x.dsrDetailId === l.id)
-          .map((x) => db.studentMaster.find((s) => s.id === x.studentId)?.name)
-          .filter(Boolean);
+        const names = (l.studentIds || []).map((id) => db.studentMaster.find((s) => s.id === id)?.name).filter(Boolean);
         const m = db.materialMaster.find((x) => x.id === l.materialId);
         return (
           <View key={l.id} style={{ paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: colors.border }}>
@@ -209,13 +309,12 @@ function DsrSummary({ dsr, db }) {
 
 export default function DsrScreen() {
   const { currentUser } = useAuth();
-  const { db, refresh } = useData();
+  const { db, refresh, offline } = useData();
+  const outbox = useDsrOutbox();
   const me = currentUser?.id;
   const today = todayLocalYMD();
 
   const allocation = db.allocations.find((a) => a.active !== false && (a.resource1Id === me || a.resource2Id === me));
-  const todaysDsr = db.dsr.find((d) => d.resourceId === me && d.dsrDate === today);
-  const submitted = todaysDsr?.status === 'Submitted';
 
   // Where the facilitator checked in today (latest check-in), else their allocation.
   const checkedInBeneficiary = useMemo(() => {
@@ -243,83 +342,87 @@ export default function DsrScreen() {
     [db.materialMaster]
   );
 
-  // ---- the form --------------------------------------------------------
+  // ---- which DSR this is: facilitator + date + beneficiary -------------
   const [beneficiaryId, setBeneficiaryId] = useState('');
-  const [timeIn, setTimeIn] = useState('');
-  const [childrenMorning, setChildrenMorning] = useState('');
-  const [childrenAfternoon, setChildrenAfternoon] = useState('');
-  const [stockRag, setStockRag] = useState('');
-  const [stockRemarks, setStockRemarks] = useState('');
-  const [bookRag, setBookRag] = useState('');
-  const [overallRag, setOverallRag] = useState('');
-  const [circleTime, setCircleTime] = useState([]);
-  const [epl, setEpl] = useState([]); // ids of EPL materials
-  const [remarks, setRemarks] = useState('');
-  const [lines, setLines] = useState([]); // { key, materialId, materialActivity, sessionPeriod, studentIds }
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState('');
-  const [expandedPrev, setExpandedPrev] = useState(null);
+  const beneficiary = db.beneficiaries.find((b) => b.id === beneficiaryId);
+  const key = me && beneficiaryId ? `${me}|${today}|${beneficiaryId}` : '';
+
+  const serverDsr = db.dsr.find((d) => d.resourceId === me && d.dsrDate === today && d.beneficiaryId === beneficiaryId);
+  const serverSubmitted = serverDsr?.status === 'Submitted';
+  const queued = key ? outbox.find((e) => e.key === key) : null;
+  const rejected = queued && queued.error ? queued.error : '';
+  const queuedSubmit = !!queued && !queued.error && queued.submit;
+  const locked = serverSubmitted || queuedSubmit;
 
   const students = useMemo(
     () => db.studentMaster.filter((s) => s.beneficiaryId === beneficiaryId).sort((a, b) => (a.name || '').localeCompare(b.name || '')),
     [db.studentMaster, beneficiaryId]
   );
-  const beneficiary = db.beneficiaries.find((b) => b.id === beneficiaryId);
 
-  // Fill the form from today's saved DSR when it first becomes known (and
-  // again if its status changes) -- but never overwrite what is being typed
-  // just because the background refresh ran.
-  const hydratedKey = useRef(null);
-  useEffect(() => {
-    const key = todaysDsr ? `${todaysDsr.id}:${todaysDsr.status}` : 'new';
-    if (hydratedKey.current === key) return;
-    hydratedKey.current = key;
-    if (!todaysDsr) return;
-    setBeneficiaryId(todaysDsr.beneficiaryId || '');
-    setTimeIn(todaysDsr.timeIn || '');
-    setChildrenMorning(todaysDsr.childrenMorning === null || todaysDsr.childrenMorning === undefined ? '' : String(todaysDsr.childrenMorning));
-    setChildrenAfternoon(todaysDsr.childrenAfternoon === null || todaysDsr.childrenAfternoon === undefined ? '' : String(todaysDsr.childrenAfternoon));
-    setStockRag(todaysDsr.stockRag || '');
-    setStockRemarks(todaysDsr.stockRemarks || '');
-    setBookRag(todaysDsr.bookRag || '');
-    setOverallRag(todaysDsr.overallRag || '');
-    setCircleTime(todaysDsr.circleTimeActivities || []);
-    setEpl(todaysDsr.eplMaterialsUsed || []);
-    setRemarks(todaysDsr.remarks || '');
-    setLines(
-      db.dsrDetail
-        .filter((l) => l.dsrId === todaysDsr.id)
-        .map((l) => ({
-          key: l.id,
-          materialId: l.materialId,
-          materialActivity: l.materialActivity || '',
-          sessionPeriod: l.sessionPeriod,
-          studentIds: db.dsrDetailStudents.filter((x) => x.dsrDetailId === l.id).map((x) => x.studentId),
-        }))
-    );
-  }, [todaysDsr?.id, todaysDsr?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ---- the form --------------------------------------------------------
+  const [form, setForm] = useState(emptyForm);
+  const patch = (p) => setForm((f) => ({ ...f, ...p }));
+  const [hydrated, setHydrated] = useState(false);
+  const formKeyRef = useRef(''); // which DSR the form currently holds
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [savedAt, setSavedAt] = useState('');
+  const [expandedPrev, setExpandedPrev] = useState(null);
 
-  // A brand-new report starts with the beneficiary the facilitator checked in
-  // at and the time-in from today's attendance.
+  // Pick the beneficiary for a brand-new session.
   useEffect(() => {
-    if (todaysDsr) return;
     if (!beneficiaryId && defaultBeneficiaryId) setBeneficiaryId(defaultBeneficiaryId);
-    if (!timeIn && timeInToday) setTimeIn(timeInToday);
-  }, [todaysDsr, beneficiaryId, defaultBeneficiaryId, timeIn, timeInToday]);
+  }, [beneficiaryId, defaultBeneficiaryId]);
 
-  function changeBeneficiary(id) {
-    if (id === beneficiaryId) return;
-    const hasStudents = lines.some((l) => l.studentIds.length > 0);
-    const apply = () => {
-      setBeneficiaryId(id);
-      // each beneficiary has its own students, so the picks on existing lines no longer apply
-      setLines((prev) => prev.map((l) => ({ ...l, studentIds: [] })));
+  // Load the form for this DSR. Newest information wins: a copy waiting in the
+  // upload queue, else the draft kept on the phone (if newer than the server's
+  // copy), else the server's copy, else a blank form.
+  useEffect(() => {
+    let cancelled = false;
+    setHydrated(false);
+    (async () => {
+      let source = null;
+      if (key) {
+        const entry = outbox.find((e) => e.key === key);
+        if (entry) {
+          source = formFromBody(entry.body);
+        } else {
+          const local = await loadLocalDraft(key);
+          const serverTime = serverDsr?.updatedAt ? Date.parse(serverDsr.updatedAt) : 0;
+          if (local && !serverSubmitted && (!serverDsr || local.savedAt > serverTime)) source = local.form;
+          else if (serverDsr) source = formFromServer(serverDsr, db);
+        }
+      }
+      if (cancelled) return;
+      formKeyRef.current = key;
+      setForm(source ? { ...emptyForm(), ...source } : { ...emptyForm(), timeIn: timeInToday });
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
     };
-    if (!hasStudents) return apply();
-    Alert.alert('Change beneficiary?', "The students you picked on your material lines belong to the current beneficiary, so they'll be cleared and you'll need to pick them again.", [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Change', onPress: apply },
-    ]);
+  }, [key, serverDsr?.status, queuedSubmit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep what is typed on the phone as you go (so nothing is lost offline).
+  useEffect(() => {
+    if (!hydrated || locked || !key || formKeyRef.current !== key) return undefined;
+    const savedKey = key;
+    const timer = setTimeout(() => {
+      if (formKeyRef.current === savedKey) saveLocalDraft(savedKey, form);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [form, hydrated, locked, key]);
+
+  // Time in from today's check-in, if it arrives after the form was opened.
+  useEffect(() => {
+    if (hydrated && !locked && key && !form.timeIn && timeInToday) patch({ timeIn: timeInToday });
+  }, [hydrated, locked, key, form.timeIn, timeInToday]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function changeBeneficiary(id) {
+    if (id === beneficiaryId) return;
+    // Each beneficiary has its own DSR; keep this one's typing safe on the phone first.
+    if (hydrated && !locked && key && formKeyRef.current === key) await saveLocalDraft(key, form);
+    setBeneficiaryId(id);
   }
 
   // ---- line editor -----------------------------------------------------
@@ -346,7 +449,7 @@ export default function DsrScreen() {
     if (!lMaterialId) return Alert.alert('Choose a material', 'Pick the material that was used.');
     if (lStudents.length === 0) return Alert.alert('Choose students', 'Select at least one student who worked on this material.');
     const line = { key: editingKey || `new-${Date.now()}`, materialId: lMaterialId, materialActivity: lActivity, sessionPeriod: lPeriod, studentIds: lStudents };
-    setLines((prev) => (editingKey ? prev.map((l) => (l.key === editingKey ? line : l)) : [...prev, line]));
+    setForm((f) => ({ ...f, lines: editingKey ? f.lines.map((l) => (l.key === editingKey ? line : l)) : [...f.lines, line] }));
     setShowLine(false);
   }
 
@@ -358,47 +461,79 @@ export default function DsrScreen() {
   function missingForSubmit() {
     const missing = [];
     if (!beneficiaryId) missing.push('Beneficiary');
-    if (!timeIn) missing.push('Facilitator time in');
-    if (childrenMorning === '') missing.push('Children at 9.30 am');
-    if (childrenAfternoon === '') missing.push('Active children 12.30 to 2 pm');
-    if (!stockRag) missing.push('Stock RAG rating');
-    if (!bookRag) missing.push('Book RAG rating');
-    if (!overallRag) missing.push('Overall day RAG rating');
+    if (!form.timeIn) missing.push('Facilitator time in');
+    if (form.childrenMorning === '') missing.push('Children at 9.30 am');
+    if (form.childrenAfternoon === '') missing.push('Active children 12.30 to 2 pm');
+    if (!form.stockRag) missing.push('Stock RAG rating');
+    if (!form.bookRag) missing.push('Book RAG rating');
+    if (!form.overallRag) missing.push('Overall day RAG rating');
     return missing;
+  }
+
+  function buildBody(submit) {
+    return {
+      date: today,
+      submit,
+      header: {
+        beneficiaryId,
+        timeIn: form.timeIn,
+        childrenMorning: form.childrenMorning,
+        childrenAfternoon: form.childrenAfternoon,
+        stockRag: form.stockRag,
+        stockRemarks: form.stockRemarks,
+        bookRag: form.bookRag,
+        overallRag: form.overallRag,
+        circleTimeActivities: form.circleTime,
+        eplMaterialsUsed: form.epl,
+        remarks: form.remarks,
+      },
+      lines: form.lines.map((l) => ({
+        materialId: l.materialId,
+        materialActivity: l.materialActivity,
+        sessionPeriod: l.sessionPeriod,
+        studentIds: l.studentIds,
+      })),
+    };
   }
 
   async function send(submit) {
     if (!beneficiaryId) return Alert.alert('Choose the beneficiary', 'Pick the beneficiary this DSR is for.');
+    const body = buildBody(submit);
     setSaving(true);
     try {
-      await apiPost('/api/dsr/save', {
-        date: today,
-        submit,
-        header: {
-          beneficiaryId,
-          timeIn,
-          childrenMorning,
-          childrenAfternoon,
-          stockRag,
-          stockRemarks,
-          bookRag,
-          overallRag,
-          circleTimeActivities: circleTime,
-          eplMaterialsUsed: epl,
-          remarks,
-        },
-        lines: lines.map((l) => ({
-          materialId: l.materialId,
-          materialActivity: l.materialActivity,
-          sessionPeriod: l.sessionPeriod,
-          studentIds: l.studentIds,
-        })),
-      });
+      await saveLocalDraft(key, form); // keep a copy on the phone whatever happens next
+      await apiPost('/api/dsr/save', body);
+      await removeEntry(key); // any older copy waiting in the queue is now out of date
       await refresh();
-      if (submit) Alert.alert('Submitted', "Today's DSR has been submitted. It can't be changed now.");
-      else setSavedAt(nowHHMM());
+      if (submit) {
+        await clearLocalDraft(key);
+        Alert.alert('Submitted', "This DSR has been submitted. It can't be changed now.");
+      } else {
+        setSavedAt(nowHHMM());
+      }
     } catch (e) {
-      Alert.alert(submit ? 'Could not submit' : 'Could not save', e.message || 'Please try again.');
+      if (e.isNetworkError) {
+        // No connection: queue it on the phone; it uploads by itself later.
+        const stamp = new Date().toISOString();
+        await enqueue({
+          key,
+          resourceId: me,
+          date: today,
+          beneficiaryId,
+          submit,
+          queuedAt: stamp,
+          body: { ...body, offlineQueued: true, ...(submit ? { submittedAt: stamp } : {}) },
+        });
+        setSavedAt(nowHHMM());
+        Alert.alert(
+          submit ? 'Submitted on this phone' : 'Draft saved on this phone',
+          submit
+            ? "You're offline, so it hasn't reached the server yet. It's locked now and will upload automatically when you're back online."
+            : "You're offline. Your draft is safe on this phone and will upload automatically when you're back online."
+        );
+      } else {
+        Alert.alert(submit ? 'Could not submit' : 'Could not save', e.message || 'Please try again.');
+      }
     } finally {
       setSaving(false);
     }
@@ -407,85 +542,150 @@ export default function DsrScreen() {
   function submit() {
     const missing = missingForSubmit();
     if (missing.length) return Alert.alert('Almost there', `Please fill in: ${missing.join(', ')}.`);
-    Alert.alert('Submit DSR?', "You can only submit once a day, and you won't be able to edit it afterwards.", [
+    Alert.alert('Submit DSR?', "You can only submit once, and you won't be able to edit it afterwards.", [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Submit', style: 'default', onPress: () => send(true) },
     ]);
   }
 
+  async function uploadNow() {
+    setUploading(true);
+    try {
+      const r = await syncOutbox(refresh);
+      if (r.offline) Alert.alert('Still offline', "Couldn't reach the server. It will keep trying automatically.");
+      else if (r.uploaded > 0) Alert.alert('Uploaded', `${r.uploaded} DSR${r.uploaded === 1 ? '' : 's'} uploaded.`);
+    } finally {
+      setUploading(false);
+    }
+  }
+
   const previous = useMemo(
     () =>
       db.dsr
-        .filter((d) => d.resourceId === me && d.id !== todaysDsr?.id)
+        .filter((d) => d.resourceId === me && d.id !== serverDsr?.id)
         .sort((a, b) => (b.dsrDate || '').localeCompare(a.dsrDate || ''))
         .slice(0, 30),
-    [db.dsr, me, todaysDsr?.id]
+    [db.dsr, me, serverDsr?.id]
   );
 
   // ---- render ----------------------------------------------------------
+  const queuedView = queuedSubmit ? summaryFromBody(queued.body) : null;
+
   return (
     <Screen>
       <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.xs }}>DSR</Text>
 
       <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        {submitted ? (
+        {offline && (
+          <Card style={{ backgroundColor: colors.chipBg }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Ionicons name="cloud-offline-outline" size={20} color={colors.amber} />
+              <Text style={{ color: colors.text, fontSize: 12, marginLeft: spacing.sm, flex: 1 }}>
+                You're offline. You can keep working: everything is saved on this phone and DSRs upload automatically when you're back online.
+              </Text>
+            </View>
+          </Card>
+        )}
+
+        {outbox.length > 0 && (
+          <Card style={{ backgroundColor: colors.chipBg }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flex: 1, paddingRight: spacing.sm }}>
+                <Text style={{ color: colors.text, fontWeight: '700' }}>
+                  {outbox.length} DSR{outbox.length === 1 ? '' : 's'} waiting to upload
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12 }}>Saved on this phone. They upload automatically when you're online.</Text>
+              </View>
+              <SecondaryButton title={uploading ? 'Uploading...' : 'Upload now'} onPress={uploadNow} disabled={uploading} />
+            </View>
+          </Card>
+        )}
+
+        {rejected ? (
+          <Card style={{ borderColor: colors.red, borderWidth: 1 }}>
+            <Text style={{ color: colors.red, fontWeight: '700', marginBottom: 2 }}>The server didn't accept this DSR</Text>
+            <Text style={{ color: colors.text, fontSize: 12 }}>{rejected}</Text>
+            <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }}>Fix it below and save or submit again.</Text>
+          </Card>
+        ) : null}
+
+        <Card>
+          <SectionLabel>Date</SectionLabel>
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: colors.border,
+              backgroundColor: colors.chipBg,
+              borderRadius: 10,
+              paddingHorizontal: spacing.md,
+              paddingVertical: spacing.md,
+              marginBottom: spacing.sm,
+            }}
+          >
+            <Text style={{ color: colors.text, fontWeight: '700' }}>{today}</Text>
+            <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+              Today only
+              {serverSubmitted ? ' - submitted' : queuedSubmit ? ' - submitted on this phone' : savedAt ? ` - draft saved ${savedAt}` : serverDsr ? ' - draft saved' : ''}
+            </Text>
+          </View>
+
+          <SectionLabel>Beneficiary</SectionLabel>
+          <Select value={beneficiaryId} onSelect={changeBeneficiary} options={beneficiaryOptions} placeholder="Choose beneficiary..." />
+          {checkedInBeneficiary && beneficiaryId === checkedInBeneficiary ? (
+            <Text style={{ color: colors.textMuted, fontSize: 11 }}>Where you checked in today. You can change it; each beneficiary has its own DSR.</Text>
+          ) : null}
+          {db.beneficiaries.length === 0 ? (
+            <Text style={{ color: colors.red, fontSize: 12 }}>
+              No beneficiaries are loaded yet. Connect to the internet once so the app can load its lists.
+            </Text>
+          ) : null}
+        </Card>
+
+        {!key ? (
+          <Text style={{ color: colors.textMuted, marginVertical: spacing.md }}>Choose the beneficiary to start this DSR.</Text>
+        ) : !hydrated ? (
+          <Text style={{ color: colors.textMuted, marginVertical: spacing.md }}>Loading...</Text>
+        ) : serverSubmitted ? (
           <Card>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
               <Ionicons name="checkmark-circle" size={20} color={colors.green} />
               <Text style={{ color: colors.green, fontWeight: '700', marginLeft: spacing.xs, flex: 1 }}>
-                Submitted for {today}. Today's DSR can't be edited. Ask your admin if something needs correcting.
+                Submitted. This DSR can't be edited. Ask your admin if something needs correcting.
               </Text>
             </View>
-            <DsrSummary dsr={todaysDsr} db={db} />
+            <DsrSummary dsr={serverDsr} db={db} />
+          </Card>
+        ) : queuedSubmit ? (
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
+              <Ionicons name="time-outline" size={20} color={colors.amber} />
+              <Text style={{ color: colors.text, fontWeight: '700', marginLeft: spacing.xs, flex: 1 }}>
+                Submitted on this phone. It's locked and will upload when you're online.
+              </Text>
+            </View>
+            <DsrSummary dsr={queuedView.dsr} lines={queuedView.lines} db={db} />
           </Card>
         ) : (
           <>
             <Card>
-              <SectionLabel>Date</SectionLabel>
-              <View
-                style={{
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.chipBg,
-                  borderRadius: 10,
-                  paddingHorizontal: spacing.md,
-                  paddingVertical: spacing.md,
-                  marginBottom: spacing.sm,
-                }}
-              >
-                <Text style={{ color: colors.text, fontWeight: '700' }}>{today}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 11 }}>
-                  Today only
-                  {savedAt ? ` - draft saved ${savedAt}` : todaysDsr ? ' - draft saved' : ''}
-                </Text>
-              </View>
-
-              <SectionLabel>Beneficiary</SectionLabel>
-              <Select value={beneficiaryId} onSelect={changeBeneficiary} options={beneficiaryOptions} placeholder="Choose beneficiary..." />
-              {checkedInBeneficiary && beneficiaryId === checkedInBeneficiary ? (
-                <Text style={{ color: colors.textMuted, fontSize: 11, marginBottom: spacing.sm }}>Where you checked in today. You can change it.</Text>
-              ) : null}
-            </Card>
-
-            <Card>
               <SectionLabel>Today's report</SectionLabel>
-              <TimeField label="Facilitator time in" value={timeIn} onChange={setTimeIn} />
+              <TimeField label="Facilitator time in" value={form.timeIn} onChange={(v) => patch({ timeIn: v })} />
               <Field
                 label="Number of children at 9.30 am"
-                value={childrenMorning}
-                onChangeText={(v) => setChildrenMorning(v.replace(/[^0-9]/g, ''))}
+                value={form.childrenMorning}
+                onChangeText={(v) => patch({ childrenMorning: v.replace(/[^0-9]/g, '') })}
                 keyboardType="number-pad"
               />
               <Field
                 label="No. of active children 12.30 to 2 pm"
-                value={childrenAfternoon}
-                onChangeText={(v) => setChildrenAfternoon(v.replace(/[^0-9]/g, ''))}
+                value={form.childrenAfternoon}
+                onChangeText={(v) => patch({ childrenAfternoon: v.replace(/[^0-9]/g, '') })}
                 keyboardType="number-pad"
               />
-              <RagPicker label="Stock RAG rating" value={stockRag} onChange={setStockRag} />
-              <Field label="Stock remarks (optional)" value={stockRemarks} onChangeText={setStockRemarks} multiline />
-              <RagPicker label="Book RAG rating" value={bookRag} onChange={setBookRag} />
-              <RagPicker label="Overall day RAG rating" value={overallRag} onChange={setOverallRag} />
+              <RagPicker label="Stock RAG rating" value={form.stockRag} onChange={(v) => patch({ stockRag: v })} />
+              <Field label="Stock remarks (optional)" value={form.stockRemarks} onChangeText={(v) => patch({ stockRemarks: v })} multiline />
+              <RagPicker label="Book RAG rating" value={form.bookRag} onChange={(v) => patch({ bookRag: v })} />
+              <RagPicker label="Overall day RAG rating" value={form.overallRag} onChange={(v) => patch({ overallRag: v })} />
 
               <SectionLabel>Circle time activities</SectionLabel>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
@@ -493,8 +693,8 @@ export default function DsrScreen() {
                   <Chip
                     key={a}
                     label={a}
-                    active={circleTime.includes(a)}
-                    onPress={() => setCircleTime((prev) => (prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]))}
+                    active={form.circleTime.includes(a)}
+                    onPress={() => setForm((f) => ({ ...f, circleTime: f.circleTime.includes(a) ? f.circleTime.filter((x) => x !== a) : [...f.circleTime, a] }))}
                   />
                 ))}
               </View>
@@ -510,23 +710,23 @@ export default function DsrScreen() {
                     <Chip
                       key={m.id}
                       label={materialText(m)}
-                      active={epl.includes(m.id)}
-                      onPress={() => setEpl((prev) => (prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]))}
+                      active={form.epl.includes(m.id)}
+                      onPress={() => setForm((f) => ({ ...f, epl: f.epl.includes(m.id) ? f.epl.filter((x) => x !== m.id) : [...f.epl, m.id] }))}
                     />
                   ))}
                 </View>
               )}
 
-              <Field label="Remarks (optional)" value={remarks} onChangeText={setRemarks} multiline />
+              <Field label="Remarks (optional)" value={form.remarks} onChangeText={(v) => patch({ remarks: v })} multiline />
             </Card>
 
             <Card>
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm }}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>Materials used ({lines.length})</Text>
+                <Text style={{ fontWeight: '700', color: colors.text }}>Materials used ({form.lines.length})</Text>
                 <SecondaryButton title="+ Add material" onPress={() => openLine(null)} />
               </View>
-              {lines.length === 0 && <Text style={{ color: colors.textMuted, fontSize: 12 }}>No materials added yet.</Text>}
-              {lines.map((l) => {
+              {form.lines.length === 0 && <Text style={{ color: colors.textMuted, fontSize: 12 }}>No materials added yet.</Text>}
+              {form.lines.map((l) => {
                 const m = db.materialMaster.find((x) => x.id === l.materialId);
                 const names = l.studentIds.map((id) => students.find((s) => s.id === id)?.name).filter(Boolean);
                 return (
@@ -544,7 +744,7 @@ export default function DsrScreen() {
                       </Text>
                     </View>
                     <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => openLine(l)} />
-                    <IconButton name="trash-outline" color={colors.red} label="Remove" onPress={() => setLines((prev) => prev.filter((x) => x.key !== l.key))} />
+                    <IconButton name="trash-outline" color={colors.red} label="Remove" onPress={() => setForm((f) => ({ ...f, lines: f.lines.filter((x) => x.key !== l.key) }))} />
                   </View>
                 );
               })}
@@ -559,7 +759,7 @@ export default function DsrScreen() {
               </View>
             </View>
             <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
-              Save as often as you like. Submit once, at the end of the day. After that it can't be edited.
+              Save as often as you like, online or offline. Submit once per beneficiary per day. After that it can't be edited.
             </Text>
           </>
         )}
