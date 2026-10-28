@@ -14,8 +14,16 @@
 // record at today (they must have timed in there). The Beneficiary dropdown lists
 // only those; with none, the screen asks them to mark attendance first.
 //
+// ADMIN APPROVAL: the Admin can approve a facilitator to file a DSR for a given
+// DATE and BENEFICIARY (Override > DSR approval) -- e.g. when they couldn't time
+// in, or forgot to file on the day. An approval lifts both the "today only" and
+// the "needs attendance" rules for that one combination, and it is used up once
+// that DSR is submitted. While any approval for another date is waiting, the
+// Date becomes a dropdown (Today + the approved dates).
+//
 // The report has a header and lines:
-//   * Date -- always today, shown but not editable.
+//   * Date -- today (shown, not editable), unless the Admin has approved other
+//     dates for this facilitator, in which case those can be picked too.
 //   * Beneficiary -- one of the beneficiaries the facilitator timed in at today
 //     (defaulting to the latest). Each beneficiary has its OWN DSR for the day;
 //     switching shows that one.
@@ -319,27 +327,60 @@ export default function DsrScreen({ navigation }) {
   const me = currentUser?.id;
   const today = todayLocalYMD();
 
-  // The beneficiaries this facilitator has timed in at today -- the only ones a DSR can be filed for.
-  const attendedBeneficiaryIds = useMemo(
-    () => [...new Set(db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId).map((a) => a.beneficiaryId))],
-    [db.attendance, me, today]
-  );
-  const hasAttendanceToday = attendedBeneficiaryIds.length > 0;
+  // The date this DSR is for: today, or a date the Admin has approved.
+  const [dsrDate, setDsrDate] = useState(today);
 
-  // The latest check-in is the default.
+  // Approvals still waiting to be used: active, not for a future date, and no
+  // submitted DSR yet for that facilitator + date + beneficiary.
+  const pendingApprovals = useMemo(
+    () =>
+      db.dsrOverrides
+        .filter((o) => o.resourceId === me && o.active !== false && o.dsrDate <= today)
+        .filter((o) => !db.dsr.some((d) => d.resourceId === me && d.dsrDate === o.dsrDate && d.beneficiaryId === o.beneficiaryId && d.status === 'Submitted'))
+        .filter((o) => !outbox.some((e) => e.key === `${me}|${o.dsrDate}|${o.beneficiaryId}` && e.submit && !e.error)),
+    [db.dsrOverrides, db.dsr, outbox, me, today]
+  );
+  const dateOptions = useMemo(() => {
+    const dates = [...new Set([today, ...pendingApprovals.map((o) => o.dsrDate), dsrDate])].sort().reverse();
+    return dates.map((d) => ({ value: d, label: d === today ? `Today (${d})` : `${d} (approved by admin)` }));
+  }, [pendingApprovals, today, dsrDate]);
+  const showDatePicker = dateOptions.length > 1;
+
+  // Beneficiaries the Admin has approved for the chosen date.
+  const approvedIdsForDate = useMemo(
+    () => db.dsrOverrides.filter((o) => o.resourceId === me && o.active !== false && o.dsrDate === dsrDate).map((o) => o.beneficiaryId),
+    [db.dsrOverrides, me, dsrDate]
+  );
+  const attendanceOnDate = useMemo(
+    () => db.attendance.filter((a) => a.facilitatorId === me && a.date === dsrDate && a.beneficiaryId),
+    [db.attendance, me, dsrDate]
+  );
+  // Timed in at -- only counts for today; other dates need an approval.
+  const attendedBeneficiaryIds = useMemo(
+    () => (dsrDate === today ? [...new Set(attendanceOnDate.map((a) => a.beneficiaryId))] : []),
+    [attendanceOnDate, dsrDate, today]
+  );
+  // Where a DSR can be filed on this date: timed in there today, or approved.
+  const allowedBeneficiaryIds = useMemo(
+    () => [...new Set([...attendedBeneficiaryIds, ...approvedIdsForDate])],
+    [attendedBeneficiaryIds, approvedIdsForDate]
+  );
+  // Default: the latest check-in today, else the first approved beneficiary.
   const defaultBeneficiaryId = useMemo(() => {
-    const recs = db.attendance.filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId);
-    recs.sort((a, b) => String(b.timeIn || '').localeCompare(String(a.timeIn || '')));
-    return recs[0]?.beneficiaryId || '';
-  }, [db.attendance, me, today]);
+    if (dsrDate === today) {
+      const recs = [...attendanceOnDate].sort((a, b) => String(b.timeIn || '').localeCompare(String(a.timeIn || '')));
+      if (recs[0]) return recs[0].beneficiaryId;
+    }
+    return approvedIdsForDate[0] || '';
+  }, [attendanceOnDate, approvedIdsForDate, dsrDate, today]);
 
   const beneficiaryOptions = useMemo(
     () =>
       db.beneficiaries
-        .filter((b) => attendedBeneficiaryIds.includes(b.id))
+        .filter((b) => allowedBeneficiaryIds.includes(b.id))
         .sort((a, b) => benLabel(a).localeCompare(benLabel(b)))
         .map((b) => ({ value: b.id, label: benLabel(b) })),
-    [db.beneficiaries, attendedBeneficiaryIds]
+    [db.beneficiaries, allowedBeneficiaryIds]
   );
   const eplMaterials = useMemo(
     () => db.materialMaster.filter(isEpl).sort((a, b) => (a.name || '').localeCompare(b.name || '') || (a.type || '').localeCompare(b.type || '')),
@@ -349,19 +390,19 @@ export default function DsrScreen({ navigation }) {
   // ---- which DSR this is: facilitator + date + beneficiary -------------
   const [beneficiaryId, setBeneficiaryId] = useState('');
   const beneficiary = db.beneficiaries.find((b) => b.id === beneficiaryId);
-
-  // Time in at the chosen beneficiary today (the earliest, if they timed in more than once).
-  const timeInToday = useMemo(
-    () =>
-      db.attendance
-        .filter((a) => a.facilitatorId === me && a.date === today && a.beneficiaryId === beneficiaryId && a.timeIn)
-        .map((a) => a.timeIn)
-        .sort()[0] || '',
-    [db.attendance, me, today, beneficiaryId]
+  const approvalHere = db.dsrOverrides.find(
+    (o) => o.resourceId === me && o.active !== false && o.dsrDate === dsrDate && o.beneficiaryId === beneficiaryId
   );
-  const key = me && beneficiaryId ? `${me}|${today}|${beneficiaryId}` : '';
+  const attendedHere = attendedBeneficiaryIds.includes(beneficiaryId);
 
-  const serverDsr = db.dsr.find((d) => d.resourceId === me && d.dsrDate === today && d.beneficiaryId === beneficiaryId);
+  // Time in at the chosen beneficiary on that date (the earliest, if they timed in more than once).
+  const timeInToday = useMemo(
+    () => attendanceOnDate.filter((a) => a.beneficiaryId === beneficiaryId && a.timeIn).map((a) => a.timeIn).sort()[0] || '',
+    [attendanceOnDate, beneficiaryId]
+  );
+  const key = me && beneficiaryId ? `${me}|${dsrDate}|${beneficiaryId}` : '';
+
+  const serverDsr = db.dsr.find((d) => d.resourceId === me && d.dsrDate === dsrDate && d.beneficiaryId === beneficiaryId);
   const serverSubmitted = serverDsr?.status === 'Submitted';
   const queued = key ? outbox.find((e) => e.key === key) : null;
   const rejected = queued && queued.error ? queued.error : '';
@@ -383,12 +424,14 @@ export default function DsrScreen({ navigation }) {
   const [savedAt, setSavedAt] = useState('');
   const [expandedPrev, setExpandedPrev] = useState(null);
 
-  // Start on the latest check-in; if the current choice isn't one of today's
-  // check-ins (e.g. that attendance was removed), move to one that is.
+  // Start on the default beneficiary for this date; if the current choice isn't
+  // allowed on it (e.g. the date changed, or that attendance was removed), move
+  // to one that is -- or clear it if there is none.
   useEffect(() => {
-    if (!defaultBeneficiaryId) return;
-    if (!beneficiaryId || !attendedBeneficiaryIds.includes(beneficiaryId)) setBeneficiaryId(defaultBeneficiaryId);
-  }, [beneficiaryId, defaultBeneficiaryId, attendedBeneficiaryIds]);
+    if (beneficiaryId && allowedBeneficiaryIds.includes(beneficiaryId)) return;
+    if (defaultBeneficiaryId) setBeneficiaryId(defaultBeneficiaryId);
+    else if (beneficiaryId) setBeneficiaryId('');
+  }, [beneficiaryId, defaultBeneficiaryId, allowedBeneficiaryIds]);
 
   // Load the form for this DSR. Newest information wins: a copy waiting in the
   // upload queue, else the draft kept on the phone (if newer than the server's
@@ -433,6 +476,13 @@ export default function DsrScreen({ navigation }) {
   useEffect(() => {
     if (hydrated && !locked && key && !form.timeIn && timeInToday) patch({ timeIn: timeInToday });
   }, [hydrated, locked, key, form.timeIn, timeInToday]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function changeDate(d) {
+    if (d === dsrDate) return;
+    // Keep the typing for this DSR safe on the phone before moving to another one.
+    if (hydrated && !locked && key && formKeyRef.current === key) await saveLocalDraft(key, form);
+    setDsrDate(d);
+  }
 
   async function changeBeneficiary(id) {
     if (id === beneficiaryId) return;
@@ -488,7 +538,7 @@ export default function DsrScreen({ navigation }) {
 
   function buildBody(submit) {
     return {
-      date: today,
+      date: dsrDate,
       submit,
       header: {
         beneficiaryId,
@@ -534,7 +584,7 @@ export default function DsrScreen({ navigation }) {
         await enqueue({
           key,
           resourceId: me,
-          date: today,
+          date: dsrDate,
           beneficiaryId,
           submit,
           queuedAt: stamp,
@@ -586,7 +636,7 @@ export default function DsrScreen({ navigation }) {
 
   // ---- render ----------------------------------------------------------
   const queuedView = queuedSubmit ? summaryFromBody(queued.body) : null;
-  const needsAttendance = !hasAttendanceToday && !serverSubmitted && !queuedSubmit;
+  const needsAttendance = allowedBeneficiaryIds.length === 0 && !serverSubmitted && !queuedSubmit;
 
   return (
     <Screen>
@@ -626,44 +676,54 @@ export default function DsrScreen({ navigation }) {
           </Card>
         ) : null}
 
-        {needsAttendance ? (
-          <Card>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
-              <Ionicons name="alert-circle-outline" size={22} color={colors.amber} />
-              <Text style={{ color: colors.text, fontWeight: '700', marginLeft: spacing.sm, flex: 1 }}>Mark your attendance first</Text>
-            </View>
-            <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
-              A DSR can only be filled in for a beneficiary you've timed in at. Mark your attendance for {today}, then come back here.
-            </Text>
-            <PrimaryButton title="Go to Attendance" onPress={() => navigation?.navigate('Attendance')} />
-          </Card>
-        ) : (
-          <>
         <Card>
           <SectionLabel>Date</SectionLabel>
-          <View
-            style={{
-              borderWidth: 1,
-              borderColor: colors.border,
-              backgroundColor: colors.chipBg,
-              borderRadius: 10,
-              paddingHorizontal: spacing.md,
-              paddingVertical: spacing.md,
-              marginBottom: spacing.sm,
-            }}
-          >
-            <Text style={{ color: colors.text, fontWeight: '700' }}>{today}</Text>
-            <Text style={{ color: colors.textMuted, fontSize: 11 }}>
-              Today only
-              {serverSubmitted ? ' - submitted' : queuedSubmit ? ' - submitted on this phone' : savedAt ? ` - draft saved ${savedAt}` : serverDsr ? ' - draft saved' : ''}
-            </Text>
-          </View>
+          {showDatePicker ? (
+            <>
+              <Select value={dsrDate} onSelect={changeDate} options={dateOptions} />
+              <Text style={{ color: colors.textMuted, fontSize: 11, marginBottom: spacing.sm }}>
+                You can pick an earlier date only where your admin has approved a DSR for you.
+              </Text>
+            </>
+          ) : (
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: colors.border,
+                backgroundColor: colors.chipBg,
+                borderRadius: 10,
+                paddingHorizontal: spacing.md,
+                paddingVertical: spacing.md,
+                marginBottom: spacing.sm,
+              }}
+            >
+              <Text style={{ color: colors.text, fontWeight: '700' }}>{dsrDate}</Text>
+              <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                Today only
+                {serverSubmitted ? ' - submitted' : queuedSubmit ? ' - submitted on this phone' : savedAt ? ` - draft saved ${savedAt}` : serverDsr ? ' - draft saved' : ''}
+              </Text>
+            </View>
+          )}
 
-          <SectionLabel>Beneficiary</SectionLabel>
-          <Select value={beneficiaryId} onSelect={changeBeneficiary} options={beneficiaryOptions} placeholder="Choose beneficiary..." />
-          <Text style={{ color: colors.textMuted, fontSize: 11 }}>
-            Only beneficiaries you've timed in at today are listed. Each beneficiary has its own DSR.
-          </Text>
+          {allowedBeneficiaryIds.length > 0 ? (
+            <>
+              <SectionLabel>Beneficiary</SectionLabel>
+              <Select value={beneficiaryId} onSelect={changeBeneficiary} options={beneficiaryOptions} placeholder="Choose beneficiary..." />
+              <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                {dsrDate === today
+                  ? "Beneficiaries you've timed in at today, or that your admin has approved, are listed. Each beneficiary has its own DSR."
+                  : 'Beneficiaries your admin has approved for this date. Each beneficiary has its own DSR.'}
+              </Text>
+              {approvalHere && (dsrDate !== today || !attendedHere) ? (
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: spacing.sm }}>
+                  <Ionicons name="shield-checkmark-outline" size={18} color={colors.green} />
+                  <Text style={{ color: colors.text, fontSize: 12, marginLeft: spacing.xs, flex: 1 }}>
+                    Approved by your admin to file this DSR. Reason: {approvalHere.reason}
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          ) : null}
           {db.beneficiaries.length === 0 ? (
             <Text style={{ color: colors.red, fontSize: 12 }}>
               No beneficiaries are loaded yet. Connect to the internet once so the app can load its lists.
@@ -671,6 +731,20 @@ export default function DsrScreen({ navigation }) {
           ) : null}
         </Card>
 
+        {needsAttendance ? (
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
+              <Ionicons name="alert-circle-outline" size={22} color={colors.amber} />
+              <Text style={{ color: colors.text, fontWeight: '700', marginLeft: spacing.sm, flex: 1 }}>Mark your attendance first</Text>
+            </View>
+            <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
+              A DSR can only be filled in for a beneficiary you've timed in at. Mark your attendance for {dsrDate}, then come back here. If you
+              couldn't time in, ask your admin to approve a DSR for you.
+            </Text>
+            <PrimaryButton title="Go to Attendance" onPress={() => navigation?.navigate('Attendance')} />
+          </Card>
+        ) : (
+          <>
         {!key ? (
           <Text style={{ color: colors.textMuted, marginVertical: spacing.md }}>Choose the beneficiary to start this DSR.</Text>
         ) : !hydrated ? (

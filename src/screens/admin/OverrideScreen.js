@@ -22,7 +22,8 @@ import {
 } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
-import { Screen, Card, SectionLabel, Select, Field, DateField, TimeField, PrimaryButton } from '../../components/UI';
+import { Screen, Card, SectionLabel, Select, Field, DateField, TimeField, PrimaryButton, Chip } from '../../components/UI';
+import DsrApprovalSection from './DsrApprovalSection';
 import { colors, spacing } from '../../theme';
 import { toLocalYMD, todayLocalYMD, isFutureTime } from '../../utils/date';
 
@@ -126,6 +127,8 @@ function AddModal({ visible, title, onClose, children }) {
 }
 
 export default function OverrideScreen() {
+  // Two kinds of override: attendance corrections (the original screen) and DSR approvals.
+  const [mode, setMode] = useState('attendance');
   const { currentUser } = useAuth();
   const { db, addRecord, updateRecord, nextId } = useData();
   const activeFacilitators = db.resources.filter((r) => r.role === 'Facilitator' && r.active !== false);
@@ -246,111 +249,120 @@ export default function OverrideScreen() {
 
   return (
     <Screen>
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ paddingBottom: spacing.xl }}
-      >
-        <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.xs }}>
-          Attendance Override
-        </Text>
-        <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
-          Only active facilitators can be selected. Every correction is saved with a reason for audit.
-        </Text>
+      <View style={{ flexDirection: 'row', marginBottom: spacing.md }}>
+        <Chip label="Attendance" active={mode === 'attendance'} onPress={() => setMode('attendance')} />
+        <Chip label="DSR approval" active={mode === 'dsr'} onPress={() => setMode('dsr')} />
+      </View>
 
-        <ListHeader
-          title="Corrections"
-          count={corrections.length}
-          onAdd={() => setShowAdd(true)}
-          addLabel="Correct attendance"
-        />
-
-        <AddModal visible={showAdd} title="Correct attendance time" onClose={() => setShowAdd(false)}>
-          <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
-            Pick a single date, or a date range to apply the same correction across several days
-            (e.g. a facilitator whose check-ins failed to record for a stretch of days).
+      {mode === 'dsr' ? (
+        <DsrApprovalSection />
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: spacing.xl }}
+        >
+          <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.xs }}>
+            Attendance Override
           </Text>
-          <SectionLabel>Facilitator (active only)</SectionLabel>
-          <Select
-            value={timeResourceId}
-            onSelect={setTimeResourceId}
-            options={activeFacilitators.map((f) => ({ value: f.id, label: f.name }))}
-            placeholder="Select facilitator"
-          />
-          <SectionLabel>Beneficiary (required)</SectionLabel>
-          <Select
-            value={timeBeneficiaryId}
-            onSelect={setTimeBeneficiaryId}
-            options={db.beneficiaries.map((b) => ({
-              value: b.id,
-              label: `${b.school} - ${b.class}${b.section ? ' ' + b.section : ''}`,
-            }))}
-            placeholder="Select beneficiary"
-          />
-          <View style={{ flexDirection: 'row', gap: spacing.md }}>
-            <View style={{ flex: 1 }}>
-              <DateField label="Date" value={startDate} onChange={setStartDate} maximumDate={new Date()} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <DateField label="End date (optional)" value={endDate} onChange={setEndDate} maximumDate={new Date()} />
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', gap: spacing.md }}>
-            <View style={{ flex: 1 }}>
-              <TimeField label="Time in" value={timeIn} onChange={setTimeIn} blockFutureOn={rangeHitsToday ? todayForPickers : undefined} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <TimeField label="Time out" value={timeOut} onChange={setTimeOut} blockFutureOn={rangeHitsToday ? todayForPickers : undefined} />
-            </View>
-          </View>
-          <Field
-            label="Reason (required)"
-            value={timeReason}
-            onChangeText={setTimeReason}
-            placeholder="e.g. App crashed before time-out could be marked, confirmed by phone call"
-            multiline
-          />
-          <PrimaryButton
-            title={savingTime ? 'Saving...' : 'Save attendance correction'}
-            onPress={submitTimeCorrection}
-            disabled={savingTime}
-          />
-        </AddModal>
+          <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
+            Only active facilitators can be selected. Every correction is saved with a reason for audit.
+          </Text>
 
-        {corrections.length === 0 ? (
-          <Card>
-            <Text style={{ color: colors.textMuted, fontSize: 13 }}>
-              No corrections yet. Tap + to correct a facilitator's attendance.
+          <ListHeader
+            title="Corrections"
+            count={corrections.length}
+            onAdd={() => setShowAdd(true)}
+            addLabel="Correct attendance"
+          />
+
+          <AddModal visible={showAdd} title="Correct attendance time" onClose={() => setShowAdd(false)}>
+            <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm }}>
+              Pick a single date, or a date range to apply the same correction across several days
+              (e.g. a facilitator whose check-ins failed to record for a stretch of days).
             </Text>
-          </Card>
-        ) : (
-          corrections.map((a) => {
-            const f = db.resources.find((x) => x.id === a.facilitatorId);
-            const b = db.beneficiaries.find((x) => x.id === a.beneficiaryId);
-            const by = db.resources.find((x) => x.id === a.overriddenBy);
-            return (
-              <Card key={a.id}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>{f?.name || a.facilitatorId}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {a.date} - in {a.timeIn || '—'} / out {a.timeOut || '—'}
-                </Text>
-                {b && (
+            <SectionLabel>Facilitator (active only)</SectionLabel>
+            <Select
+              value={timeResourceId}
+              onSelect={setTimeResourceId}
+              options={activeFacilitators.map((f) => ({ value: f.id, label: f.name }))}
+              placeholder="Select facilitator"
+            />
+            <SectionLabel>Beneficiary (required)</SectionLabel>
+            <Select
+              value={timeBeneficiaryId}
+              onSelect={setTimeBeneficiaryId}
+              options={db.beneficiaries.map((b) => ({
+                value: b.id,
+                label: `${b.school} - ${b.class}${b.section ? ' ' + b.section : ''}`,
+              }))}
+              placeholder="Select beneficiary"
+            />
+            <View style={{ flexDirection: 'row', gap: spacing.md }}>
+              <View style={{ flex: 1 }}>
+                <DateField label="Date" value={startDate} onChange={setStartDate} maximumDate={new Date()} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <DateField label="End date (optional)" value={endDate} onChange={setEndDate} maximumDate={new Date()} />
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', gap: spacing.md }}>
+              <View style={{ flex: 1 }}>
+                <TimeField label="Time in" value={timeIn} onChange={setTimeIn} blockFutureOn={rangeHitsToday ? todayForPickers : undefined} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <TimeField label="Time out" value={timeOut} onChange={setTimeOut} blockFutureOn={rangeHitsToday ? todayForPickers : undefined} />
+              </View>
+            </View>
+            <Field
+              label="Reason (required)"
+              value={timeReason}
+              onChangeText={setTimeReason}
+              placeholder="e.g. App crashed before time-out could be marked, confirmed by phone call"
+              multiline
+            />
+            <PrimaryButton
+              title={savingTime ? 'Saving...' : 'Save attendance correction'}
+              onPress={submitTimeCorrection}
+              disabled={savingTime}
+            />
+          </AddModal>
+
+          {corrections.length === 0 ? (
+            <Card>
+              <Text style={{ color: colors.textMuted, fontSize: 13 }}>
+                No corrections yet. Tap + to correct a facilitator's attendance.
+              </Text>
+            </Card>
+          ) : (
+            corrections.map((a) => {
+              const f = db.resources.find((x) => x.id === a.facilitatorId);
+              const b = db.beneficiaries.find((x) => x.id === a.beneficiaryId);
+              const by = db.resources.find((x) => x.id === a.overriddenBy);
+              return (
+                <Card key={a.id}>
+                  <Text style={{ fontWeight: '700', color: colors.text }}>{f?.name || a.facilitatorId}</Text>
                   <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                    {b.school} - {b.class}{b.section ? ' ' + b.section : ''}
+                    {a.date} - in {a.timeIn || '—'} / out {a.timeOut || '—'}
                   </Text>
-                )}
-                {!!a.overrideReason && (
-                  <Text style={{ color: colors.text, fontSize: 12, marginTop: 4 }}>Reason: {a.overrideReason}</Text>
-                )}
-                <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 4 }}>
-                  Corrected {a.overriddenAt ? String(a.overriddenAt).slice(0, 10) : ''}
-                  {by ? ` by ${by.name}` : ''}
-                </Text>
-              </Card>
-            );
-          })
-        )}
-      </ScrollView>
+                  {b && (
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                      {b.school} - {b.class}{b.section ? ' ' + b.section : ''}
+                    </Text>
+                  )}
+                  {!!a.overrideReason && (
+                    <Text style={{ color: colors.text, fontSize: 12, marginTop: 4 }}>Reason: {a.overrideReason}</Text>
+                  )}
+                  <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 4 }}>
+                    Corrected {a.overriddenAt ? String(a.overriddenAt).slice(0, 10) : ''}
+                    {by ? ` by ${by.name}` : ''}
+                  </Text>
+                </Card>
+              );
+            })
+          )}
+        </ScrollView>
+      )}
     </Screen>
   );
 }

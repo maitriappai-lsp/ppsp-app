@@ -107,6 +107,7 @@ const FK_RESOLVERS = {
   facilitator1Id: resourceName,
   facilitator2Id: resourceName,
   updatedBy: resourceName,
+  grantedBy: resourceName,
   lastUpdatedBy: resourceName,
   materialId: materialLabel,
   bookId: bookLabel,
@@ -158,7 +159,7 @@ const GROUPS = [
     key: 'transactions',
     label: 'Beneficiary / Transactions',
     icon: 'swap-horizontal-outline',
-    tables: ['attendance', 'stockUpdate', 'bookUpdate', 'dsr', 'audits'],
+    tables: ['attendance', 'stockUpdate', 'bookUpdate', 'dsr', 'audits', 'dsrOverrides'],
   },
 ];
 
@@ -337,6 +338,18 @@ const TABLE_CONFIGS = [
         );
       },
     },
+  },
+  {
+    key: 'dsrOverrides',
+    dbKey: 'dsrOverrides',
+    label: 'DSR approvals',
+    dateField: 'dsrDate',
+    searchText: (r, db) =>
+      [resourceName(db, r.resourceId), beneficiaryLabel(db, r.beneficiaryId), r.dsrDate, r.reason, r.active === false ? 'inactive' : 'active', resourceName(db, r.grantedBy)]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) =>
+      `${resourceName(db, r.resourceId)} \u00b7 ${beneficiaryLabel(db, r.beneficiaryId)} \u00b7 ${r.dsrDate}${r.active === false ? ' \u00b7 Inactive' : ''}`,
   },
   {
     key: 'audits',
