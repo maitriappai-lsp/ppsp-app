@@ -135,8 +135,9 @@ export function ImportFromExcel({ label, table, columnsHint }) {
       formData.append('file', { uri: file.uri, name: file.name, type: file.mimeType || 'application/octet-stream' });
       const outcome = await apiPost(`/api/import/${table}`, formData);
       await refresh();
+      // Show the first few problems (which rows, and why) so the sheet can be fixed.
       const errorPreview = outcome.errors?.length
-        ? `\n\nFirst issue: ${outcome.errors[0]}${outcome.errors.length > 1 ? ` (+${outcome.errors.length - 1} more)` : ''}`
+        ? `\n\nIssues:\n${outcome.errors.slice(0, 3).join('\n')}${outcome.errors.length > 3 ? `\n(+${outcome.errors.length - 3} more)` : ''}`
         : '';
       Alert.alert(
         'Import complete',
