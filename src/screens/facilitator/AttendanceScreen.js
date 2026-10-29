@@ -44,7 +44,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
 import { findGeofenceMatch } from '../../utils/geofence';
 import { registerGeofences, getDebugLog, clearDebugLog, isGeofencingTaskRegistered } from '../../background/geofenceTask';
-import { Screen, Card, SectionLabel, Select, PrimaryButton, SecondaryButton } from '../../components/UI';
+import { Screen, Card, Chip, SectionLabel, Select, PrimaryButton, SecondaryButton } from '../../components/UI';
+import LeaveSection from './LeaveSection';
 import { colors, spacing } from '../../theme';
 import { todayLocalYMD, nowHHMM } from '../../utils/date';
 
@@ -52,7 +53,7 @@ import { todayLocalYMD, nowHHMM } from '../../utils/date';
 // geofence before auto time-out fires.
 const EXIT_GRACE_MS = 90 * 1000;
 
-export default function AttendanceScreen() {
+function CheckInPanel() {
   const { currentUser } = useAuth();
   const { db, getBeneficiary, addRecord, updateRecord, nextId } = useData();
   const today = todayLocalYMD();
@@ -335,7 +336,7 @@ export default function AttendanceScreen() {
   }
 
   return (
-    <Screen>
+    <View style={{ flex: 1 }}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: spacing.xl }}>
         <Text style={{ fontSize: 12, color: colors.textMuted, marginBottom: 2 }}>
           {currentUser?.name}
@@ -506,6 +507,27 @@ export default function AttendanceScreen() {
           )}
         </Card>
       </ScrollView>
+    </View>
+  );
+}
+
+// The Attendance tab: the check-in, and the facilitator's leave and permission
+// requests. Both stay mounted and the inactive one is just hidden, so switching
+// to Leave never interrupts a check-in in progress.
+export default function AttendanceScreen() {
+  const [mode, setMode] = useState('checkin');
+  return (
+    <Screen>
+      <View style={{ flexDirection: 'row', marginBottom: spacing.sm }}>
+        <Chip label="Check-in" active={mode === 'checkin'} onPress={() => setMode('checkin')} />
+        <Chip label="Leave & permission" active={mode === 'leave'} onPress={() => setMode('leave')} />
+      </View>
+      <View style={{ flex: 1, display: mode === 'checkin' ? 'flex' : 'none' }}>
+        <CheckInPanel />
+      </View>
+      <View style={{ flex: 1, display: mode === 'leave' ? 'flex' : 'none' }}>
+        <LeaveSection />
+      </View>
     </Screen>
   );
 }
