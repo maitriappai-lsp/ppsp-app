@@ -159,7 +159,7 @@ const GROUPS = [
     key: 'transactions',
     label: 'Beneficiary / Transactions',
     icon: 'swap-horizontal-outline',
-    tables: ['attendance', 'stockUpdate', 'bookUpdate', 'dsr', 'audits', 'dsrOverrides'],
+    tables: ['attendance', 'stockUpdate', 'bookUpdate', 'dsr', 'audits', 'dsrOverrides', 'leaveRequests'],
   },
 ];
 
@@ -340,6 +340,20 @@ const TABLE_CONFIGS = [
     },
   },
   {
+    key: 'leaveRequests',
+    dbKey: 'leaveRequests',
+    label: 'Leave & permission',
+    dateField: null,
+    // a leave is dated by its from-date, a permission by its date
+    dateOf: (r) => r.leaveFrom || r.permissionDate || '',
+    searchText: (r, db) =>
+      [resourceName(db, r.resourceId), r.requestType, r.status, r.reason, r.adminRemarks, r.leaveFrom, r.leaveTo, r.permissionDate, resourceName(db, r.updatedBy)]
+        .filter(Boolean)
+        .join(' '),
+    summary: (r, db) =>
+      `${resourceName(db, r.resourceId)} \u00b7 ${r.requestType === 'Leave' ? `Leave ${r.leaveFrom} to ${r.leaveTo}` : `Permission ${r.permissionDate} ${r.permissionFrom}-${r.permissionTo}`} \u00b7 ${r.status}`,
+  },
+  {
     key: 'dsrOverrides',
     dbKey: 'dsrOverrides',
     label: 'DSR approvals',
@@ -435,9 +449,9 @@ export default function SearchScreen() {
 
   const filtered = useMemo(() => {
     let rows = allRows;
-    if (config.dateField && (fromDate || toDate)) {
+    if ((config.dateField || config.dateOf) && (fromDate || toDate)) {
       rows = rows.filter((r) => {
-        const d = String(r[config.dateField] || '').slice(0, 10); // timestamps -> YYYY-MM-DD
+        const d = String((config.dateOf ? config.dateOf(r) : r[config.dateField]) || '').slice(0, 10); // timestamps -> YYYY-MM-DD
         if (!d) return false;
         if (fromDate && d < fromDate) return false;
         if (toDate && d > toDate) return false;
@@ -448,8 +462,9 @@ export default function SearchScreen() {
     if (q) {
       rows = rows.filter((r) => config.searchText(r, db).toLowerCase().includes(q));
     }
-    if (config.dateField) {
-      rows = rows.slice().sort((a, b) => (b[config.dateField] || '').localeCompare(a[config.dateField] || ''));
+    if (config.dateField || config.dateOf) {
+      const dateOf = (r) => (config.dateOf ? config.dateOf(r) : r[config.dateField]) || '';
+      rows = rows.slice().sort((a, b) => String(dateOf(b)).localeCompare(String(dateOf(a))));
     }
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -698,7 +713,7 @@ export default function SearchScreen() {
 
       <Field label="Search" value={query} onChangeText={setQuery} placeholder={`Search ${config.label}...`} />
 
-      {config.dateField && (
+      {(config.dateField || config.dateOf) && (
         <View style={{ flexDirection: 'row', gap: spacing.md }}>
           <View style={{ flex: 1 }}>
             <DateField label="From" value={fromDate} onChange={setFromDate} />

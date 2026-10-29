@@ -44,6 +44,7 @@ const EMPTY_DB = {
   dsr: [],
   dsrDetail: [],
   dsrOverrides: [], // admin approvals to file a DSR for a date + beneficiary
+  leaveRequests: [], // leave and permission requests
   dsrDetailStudents: [], // which students were on each DSR line
   audits: [],
   auditDetail: [],
