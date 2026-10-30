@@ -6,10 +6,10 @@
 // A RESOURCE'S BEHALF, edit any request, or delete it. The server records who
 // changed each request and when.
 import React, { useMemo, useState } from 'react';
-import { ScrollView, Text, View, Alert } from 'react-native';
+import { ScrollView, Text, View, Alert, TouchableOpacity } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
-import { Screen, Card, Chip, Field, Select, PrimaryButton, SecondaryButton } from '../../components/UI';
+import { Screen, Card, Chip, Field, Select, DateField, PrimaryButton, SecondaryButton } from '../../components/UI';
 import { IconButton, ListHeader, AddModal } from '../../components/MasterParts';
 import { LeaveFields, LeaveStatusBadge, emptyLeave, leaveFromRecord, leavePayload, leaveSummary, validateLeaveForm } from '../../components/LeaveParts';
 import { colors, spacing } from '../../theme';
@@ -22,6 +22,9 @@ export default function LeaveAdminScreen() {
 
   const [statusFilter, setStatusFilter] = useState('Pending');
   const [resourceFilter, setResourceFilter] = useState('');
+  // Optional date range: shows requests whose leave days (or permission date) fall within it.
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyLeave());
@@ -37,9 +40,18 @@ export default function LeaveAdminScreen() {
     .map((r) => ({ value: r.id, label: `${r.name}${r.role ? ' (' + r.role + ')' : ''}` }));
 
   const startOf = (r) => r.leaveFrom || r.permissionDate || '';
+  // A request is in the date range if any of its days overlap it: a leave from
+  // 28 Oct to 2 Nov shows for a "1 Nov to 5 Nov" filter, a permission shows on its date.
+  const inRange = (r) => {
+    const start = (r.requestType === 'Leave' ? r.leaveFrom : r.permissionDate) || '';
+    const end = (r.requestType === 'Leave' ? r.leaveTo : r.permissionDate) || '';
+    if (fromDate && end < fromDate) return false;
+    if (toDate && start > toDate) return false;
+    return true;
+  };
   const inScope = useMemo(
-    () => db.leaveRequests.filter((r) => !resourceFilter || r.resourceId === resourceFilter),
-    [db.leaveRequests, resourceFilter]
+    () => db.leaveRequests.filter((r) => (!resourceFilter || r.resourceId === resourceFilter) && inRange(r)),
+    [db.leaveRequests, resourceFilter, fromDate, toDate] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const countOf = (s) => (s === 'All' ? inScope.length : inScope.filter((r) => r.status === s).length);
   const rows = useMemo(
@@ -117,6 +129,42 @@ export default function LeaveAdminScreen() {
         </View>
         <Select value={resourceFilter} onSelect={setResourceFilter} options={[{ value: '', label: 'All resources' }, ...resourceOptions]} />
 
+        <View style={{ flexDirection: 'row', gap: spacing.md }}>
+          <View style={{ flex: 1 }}>
+            <DateField
+              label="From date"
+              value={fromDate}
+              onChange={(v) => {
+                setFromDate(v);
+                if (toDate && toDate < v) setToDate(v);
+              }}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <DateField
+              label="To date"
+              value={toDate}
+              onChange={(v) => {
+                setToDate(v);
+                if (fromDate && fromDate > v) setFromDate(v);
+              }}
+            />
+          </View>
+        </View>
+        {(fromDate || toDate) && (
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm }}>
+            <Text style={{ color: colors.textMuted, fontSize: 11, flex: 1 }}>Showing requests that fall within these dates.</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setFromDate('');
+                setToDate('');
+              }}
+            >
+              <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Clear dates</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <AddModal visible={showForm} title={editingId ? 'Edit request' : 'Request on behalf'} onClose={() => setShowForm(false)}>
           <LeaveFields
             value={form}
@@ -155,7 +203,7 @@ export default function LeaveAdminScreen() {
 
         {rows.length === 0 && (
           <Text style={{ color: colors.textMuted, marginVertical: spacing.md }}>
-            {db.leaveRequests.length === 0 ? 'No requests yet.' : `No ${statusFilter === 'All' ? '' : statusFilter.toLowerCase() + ' '}requests here.`}
+            {db.leaveRequests.length === 0 ? 'No requests yet.' : `No ${statusFilter === 'All' ? '' : statusFilter.toLowerCase() + ' '}requests${fromDate || toDate || resourceFilter ? ' for these filters' : ' here'}.`}
           </Text>
         )}
 
