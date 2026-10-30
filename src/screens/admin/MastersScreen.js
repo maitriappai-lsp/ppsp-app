@@ -95,7 +95,31 @@ export default function MastersScreen() {
 }
 
 function ResourcesTab() {
-  const { db, addRecord, updateRecord, deleteRecord, nextId } = useData();
+  const { db, addRecord, updateRecord, deleteRecord, nextId, refresh } = useData();
+
+  // Forgotten password: put it back to the default and make them choose a new one.
+  function resetPassword(r) {
+    Alert.alert(
+      'Reset password',
+      `Reset ${r.name}'s password to the default (changeme123)?\n\nThey will be asked to choose a new password the next time they sign in.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await apiPost('/api/auth/reset-password', { resourceId: r.id });
+              refresh().catch(() => {});
+              Alert.alert('Password reset', `${res.name}'s password is now ${res.defaultPassword}. Tell them to sign in with it; they will be asked to set a new one.`);
+            } catch (e) {
+              Alert.alert('Could not reset', e.message || 'Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  }
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [type, setType] = useState('Volunteer');
@@ -342,6 +366,7 @@ function ResourcesTab() {
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
                 <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(r)} />
+                <IconButton name="key-outline" color={colors.primary} label="Reset password" onPress={() => resetPassword(r)} />
                 <IconButton
                   name={isActive ? 'pause-circle-outline' : 'play-circle-outline'}
                   color={isActive ? colors.amber : colors.green}
