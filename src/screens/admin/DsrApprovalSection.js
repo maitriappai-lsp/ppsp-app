@@ -34,7 +34,7 @@ export default function DsrApprovalSection() {
   const [reason, setReason] = useState('');
 
   const resName = (id) => db.resources.find((r) => r.id === id)?.name || '--';
-  const facilitators = db.resources.filter((r) => r.role === 'Facilitator' && r.active !== false);
+  const facilitators = db.resources.filter((r) => (r.role === 'Facilitator' || r.role === 'Audit Facilitator') && r.active !== false);
   const facilitatorOptions = facilitators.map((r) => ({ value: r.id, label: r.name }));
   const beneficiaryOptions = db.beneficiaries
     .slice()

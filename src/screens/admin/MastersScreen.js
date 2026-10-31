@@ -124,7 +124,6 @@ function ResourcesTab() {
   const [phone, setPhone] = useState('');
   const [type, setType] = useState('Volunteer');
   const [role, setRole] = useState('Facilitator');
-  const [auditFac, setAuditFac] = useState(false);
   const [contractStart, setContractStart] = useState('');
   const [contractEnd, setContractEnd] = useState('');
   const [saving, setSaving] = useState(false);
@@ -135,7 +134,6 @@ function ResourcesTab() {
   const [editPhone, setEditPhone] = useState('');
   const [editType, setEditType] = useState('Volunteer');
   const [editRole, setEditRole] = useState('Facilitator');
-  const [editAuditFac, setEditAuditFac] = useState(false);
   const [editContractStart, setEditContractStart] = useState('');
   const [editContractEnd, setEditContractEnd] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
@@ -160,7 +158,6 @@ function ResourcesTab() {
         address: '',
         type,
         role,
-        isAuditFacilitator: role === 'Facilitator' && auditFac,
         bloodGroup: '',
         emergencyContact: '',
         contractStart: contractStart || todayLocalYMD(),
@@ -191,7 +188,6 @@ function ResourcesTab() {
     setEditPhone(r.phone || '');
     setEditType(r.type || 'Volunteer');
     setEditRole(r.role || 'Facilitator');
-    setEditAuditFac(!!r.isAuditFacilitator);
     setEditContractStart(r.contractStart || '');
     setEditContractEnd(r.contractEnd || '');
   }
@@ -215,7 +211,6 @@ function ResourcesTab() {
         phone: editPhone,
         type: editType,
         role: editRole,
-        isAuditFacilitator: editRole === 'Facilitator' && editAuditFac,
         contractStart: editContractStart,
         contractEnd: editContractEnd,
       });
@@ -274,18 +269,8 @@ function ResourcesTab() {
         <Select
           value={role}
           onSelect={setRole}
-          options={['Facilitator', 'Admin'].map((v) => ({ value: v, label: v }))}
+          options={['Facilitator', 'Audit Facilitator', 'Admin'].map((v) => ({ value: v, label: v }))}
         />
-        {role === 'Facilitator' && (
-          <>
-            <SectionLabel>Can also log in as Audit Facilitator?</SectionLabel>
-            <Select
-              value={auditFac ? 'yes' : 'no'}
-              onSelect={(v) => setAuditFac(v === 'yes')}
-              options={[{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }]}
-            />
-          </>
-        )}
         <View style={{ flexDirection: 'row', gap: spacing.md }}>
           <View style={{ flex: 1 }}>
             <DateField label="Contract start" value={contractStart} onChange={setContractStart} placeholder="Default: today" />
@@ -318,18 +303,8 @@ function ResourcesTab() {
             <Select
               value={editRole}
               onSelect={setEditRole}
-              options={['Facilitator', 'Admin'].map((v) => ({ value: v, label: v }))}
+              options={['Facilitator', 'Audit Facilitator', 'Admin'].map((v) => ({ value: v, label: v }))}
             />
-            {editRole === 'Facilitator' && (
-              <>
-            <SectionLabel>Can also log in as Audit Facilitator?</SectionLabel>
-            <Select
-              value={editAuditFac ? 'yes' : 'no'}
-              onSelect={(v) => setEditAuditFac(v === 'yes')}
-              options={[{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }]}
-            />
-          </>
-        )}
             <View style={{ flexDirection: 'row', gap: spacing.md }}>
               <View style={{ flex: 1 }}>
                 <DateField label="Contract start" value={editContractStart} onChange={setEditContractStart} />
@@ -358,7 +333,7 @@ function ResourcesTab() {
                   )}
                 </View>
                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {r.id} - {r.type} - {r.role}{r.isAuditFacilitator ? ' - Audit facilitator' : ''}
+                  {r.id} - {r.type} - {r.role}
                 </Text>
                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>
                   Contract: {r.contractStart || '—'} to {r.contractEnd || 'open-ended'}

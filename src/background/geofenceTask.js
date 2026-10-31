@@ -158,7 +158,7 @@ TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
       return;
     }
     const { token, user } = JSON.parse(raw);
-    if (!token || !user || user.role !== 'Facilitator') {
+    if (!token || !user || (user.role !== 'Facilitator' && user.role !== 'Audit Facilitator')) {
       await logDebug(`skipped: session present but not a facilitator (role=${user?.role})`);
       return;
     }

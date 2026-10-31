@@ -87,7 +87,7 @@ export default function AdminDashboardScreen() {
     }
   }
 
-  const facilitators = db.resources.filter((r) => r.role === 'Facilitator');
+  const facilitators = db.resources.filter((r) => r.role === 'Facilitator' || r.role === 'Audit Facilitator');
 
   const q = query.trim().toLowerCase();
 

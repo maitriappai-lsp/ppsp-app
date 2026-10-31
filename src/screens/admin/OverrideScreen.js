@@ -131,7 +131,7 @@ export default function OverrideScreen() {
   const [mode, setMode] = useState('attendance');
   const { currentUser } = useAuth();
   const { db, addRecord, updateRecord, nextId } = useData();
-  const activeFacilitators = db.resources.filter((r) => r.role === 'Facilitator' && r.active !== false);
+  const activeFacilitators = db.resources.filter((r) => (r.role === 'Facilitator' || r.role === 'Audit Facilitator') && r.active !== false);
 
   // ---- Correct attendance time -------------------------------------------
   const [showAdd, setShowAdd] = useState(false);
