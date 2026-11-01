@@ -1,195 +1,334 @@
-// SCREEN 5 (Facilitator): Dashboard.
-// Date range + search + sub-tabs (Overview / Attendance / Uploads) + Export to
-// Excel. (PPSP has no Sessions or Schedule; My DSR, Stock, Student list and
-// Book update tabs are added next.)
+// SCREEN (Facilitator): Dashboard -- the facilitator's own activity for a date range.
+//
+//   Overview    counts for the range (days attended, attendance records, DSRs, files
+//               uploaded) plus the current counts for their beneficiary: students,
+//               books and material stock                         [view only]
+//   Attendance  their check-ins                                  [view only]
+//   My DSR      the DSRs they filed (tap one to read it)          [view only]
+//   Uploads     the files they uploaded -- view or download each
+//   Leave       the leave and permission requests they made, and whether they were
+//               approved ("requested and granted")                [view only; new
+//               requests are made on the Attendance screen]
+//
+// Every tab can be exported (Excel; the Overview as a CSV summary). A search box
+// filters whichever tab is showing.
 import React, { useMemo, useState } from 'react';
-import { ScrollView, Text, View, Alert, TouchableOpacity, Linking } from 'react-native';
-import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+import { ScrollView, Text, View, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
-import { apiGet } from '../../data/api';
-import { Screen, Card, Field, SecondaryButton, DateField } from '../../components/UI';
+import { Screen, Card, Chip, Field, RagChip, SecondaryButton, DateField } from '../../components/UI';
+import { LeaveStatusBadge, leaveSummary } from '../../components/LeaveParts';
+import { DsrSummary } from './DsrScreen';
+import { exportTable, exportReport, exportCsv } from '../../utils/exportTable';
+import { viewFile, downloadFile } from '../../utils/fileActions';
 import { colors, spacing } from '../../theme';
 import { todayLocalYMD } from '../../utils/date';
 
-const TABS = ['Overview', 'Attendance', 'Uploads'];
+const TABS = ['Overview', 'Attendance', 'My DSR', 'Uploads', 'Leave'];
+
+function benLabel(b) {
+  return b ? `${b.school}${b.class ? ' - ' + b.class : ''}${b.section ? ' ' + b.section : ''}` : '--';
+}
+
+function Stat({ value, label, sub }) {
+  return (
+    <View style={{ width: '50%', alignItems: 'center', paddingVertical: spacing.sm }}>
+      <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text }}>{value}</Text>
+      <Text style={{ color: colors.textMuted, fontSize: 12, textAlign: 'center' }}>{label}</Text>
+      {sub ? <Text style={{ color: colors.textMuted, fontSize: 11, textAlign: 'center' }}>{sub}</Text> : null}
+    </View>
+  );
+}
 
 export default function DashboardScreen() {
   const { currentUser } = useAuth();
   const { db } = useData();
+  const me = currentUser?.id;
+  const today = todayLocalYMD();
+
   const [tab, setTab] = useState('Overview');
   const [query, setQuery] = useState('');
-  const [from, setFrom] = useState('2026-09-01');
-  const [to, setTo] = useState(todayLocalYMD());
+  const [from, setFrom] = useState(`${today.slice(0, 8)}01`); // the 1st of this month
+  const [to, setTo] = useState(today);
+  const [leaveStatus, setLeaveStatus] = useState('All');
+  const [expandedDsr, setExpandedDsr] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const q = query.trim().toLowerCase();
+  const benName = (id) => benLabel(db.beneficiaries.find((b) => b.id === id));
+  const materialName = (id) => {
+    const m = db.materialMaster.find((x) => x.id === id);
+    return m ? `${m.name}${m.type ? ' (' + m.type + ')' : ''}` : '';
+  };
 
+  // ---- the data, for the date range -------------------------------------
   const myAttendance = useMemo(
     () =>
       db.attendance
-        .filter((a) => a.facilitatorId === currentUser?.id)
-        .filter((a) => a.date >= from && a.date <= to)
-        .filter((a) => {
-          if (!q) return true;
-          const b = db.beneficiaries.find((x) => x.id === a.beneficiaryId);
-          return `${b?.school} ${b?.class} ${b?.section} ${a.date}`.toLowerCase().includes(q);
-        }),
-    [db, currentUser, from, to, q]
+        .filter((a) => a.facilitatorId === me && a.date >= from && a.date <= to)
+        .filter((a) => !q || `${benName(a.beneficiaryId)} ${a.date}`.toLowerCase().includes(q))
+        .sort((a, b) => String(b.date).localeCompare(String(a.date))),
+    [db.attendance, db.beneficiaries, me, from, to, q] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  const myUploads = db.uploads
-    .filter((u) => u.facilitatorId === currentUser?.id && u.date >= from && u.date <= to)
-    .filter((u) => !q || `${u.fileName} ${u.description}`.toLowerCase().includes(q));
+  const myDsrs = useMemo(
+    () =>
+      db.dsr
+        .filter((d) => d.resourceId === me && d.dsrDate >= from && d.dsrDate <= to)
+        .filter((d) => !q || `${benName(d.beneficiaryId)} ${d.dsrDate} ${d.status} ${d.overallRag || ''} ${d.remarks || ''}`.toLowerCase().includes(q))
+        .sort((a, b) => String(b.dsrDate).localeCompare(String(a.dsrDate))),
+    [db.dsr, db.beneficiaries, me, from, to, q] // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
-  const [exporting, setExporting] = useState(false);
+  const myUploads = useMemo(
+    () =>
+      db.uploads
+        .filter((u) => u.facilitatorId === me && u.date >= from && u.date <= to)
+        .filter((u) => !q || `${u.fileName} ${u.description || ''} ${materialName(u.materialId)} ${benName(u.beneficiaryId)}`.toLowerCase().includes(q))
+        .sort((a, b) => String(b.date).localeCompare(String(a.date))),
+    [db.uploads, db.materialMaster, db.beneficiaries, me, from, to, q] // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
-  async function exportToExcel() {
-    const exportType = tab === 'Uploads' ? 'uploads' : 'attendance';
+  // A leave counts for the range if any of its days fall in it; a permission by its date.
+  const myLeave = useMemo(
+    () =>
+      db.leaveRequests
+        .filter((r) => r.resourceId === me)
+        .filter((r) => {
+          const start = (r.requestType === 'Leave' ? r.leaveFrom : r.permissionDate) || '';
+          const end = (r.requestType === 'Leave' ? r.leaveTo : r.permissionDate) || '';
+          return end >= from && start <= to;
+        })
+        .filter((r) => !q || `${leaveSummary(r)} ${r.status} ${r.reason || ''} ${r.adminRemarks || ''}`.toLowerCase().includes(q))
+        .sort((a, b) => String(b.leaveFrom || b.permissionDate).localeCompare(String(a.leaveFrom || a.permissionDate))),
+    [db.leaveRequests, me, from, to, q]
+  );
+  const leaveShown = leaveStatus === 'All' ? myLeave : myLeave.filter((r) => r.status === leaveStatus);
+
+  // ---- the beneficiary's current lists (not tied to the date range) ------
+  const allocation = db.allocations.find((a) => a.active !== false && (a.resource1Id === me || a.resource2Id === me));
+  const beneficiary = allocation ? db.beneficiaries.find((b) => b.id === allocation.beneficiaryId) : null;
+  const counts = useMemo(() => {
+    const bid = beneficiary?.id;
+    const books = db.bookUpdate.filter((r) => r.beneficiaryId === bid);
+    const stock = db.stockUpdate.filter((r) => r.beneficiaryId === bid);
+    const sum = (rows) => rows.reduce((n, r) => n + (Number(r.qty) || 0), 0);
+    return {
+      students: db.studentMaster.filter((s) => s.beneficiaryId === bid).length,
+      bookTitles: books.length,
+      bookCopies: sum(books),
+      stockItems: stock.length,
+      stockQty: sum(stock),
+    };
+  }, [db.studentMaster, db.bookUpdate, db.stockUpdate, beneficiary]);
+
+  const daysAttended = new Set(myAttendance.map((a) => a.date)).size;
+  const submittedDsrs = myDsrs.filter((d) => d.status === 'Submitted').length;
+
+  // ---- export, per tab ---------------------------------------------------
+  async function doExport() {
     setExporting(true);
     try {
-      const { filename, base64 } = await apiGet(
-        `/api/export/${exportType}?from=${from}&to=${to}&facilitatorId=${currentUser.id}`
-      );
-      const fileUri = FileSystem.documentDirectory + filename;
-      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(fileUri, {
-          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          dialogTitle: filename,
-        });
+      if (tab === 'Overview') {
+        await exportCsv(`my-summary-${from}-to-${to}.csv`, [
+          ['PPSP - my summary', ''],
+          ['From', from],
+          ['To', to],
+          ['Beneficiary', benLabel(beneficiary)],
+          ['', ''],
+          ['In this date range', ''],
+          ['Days attended', daysAttended],
+          ['Attendance records', myAttendance.length],
+          ['DSRs submitted', submittedDsrs],
+          ['Files uploaded', myUploads.length],
+          ['', ''],
+          ['Current lists for my beneficiary', ''],
+          ['Students', counts.students],
+          ['Book titles', counts.bookTitles],
+          ['Book copies (total qty)', counts.bookCopies],
+          ['Material stock items', counts.stockItems],
+          ['Material stock (total qty)', counts.stockQty],
+        ]);
+      } else if (tab === 'Attendance') {
+        await exportReport('attendance', { from, to, facilitatorId: me });
+      } else if (tab === 'My DSR') {
+        await exportTable('dsr', myDsrs.map((d) => d.id));
+      } else if (tab === 'Uploads') {
+        await exportReport('uploads', { from, to, facilitatorId: me });
       } else {
-        Alert.alert('Export ready', `Saved to ${fileUri}`);
+        await exportTable('leaveRequests', leaveShown.map((r) => r.id));
       }
-    } catch (e) {
-      Alert.alert('Export failed', e.message || 'Please try again.');
     } finally {
       setExporting(false);
     }
   }
 
+  const exportLabel =
+    tab === 'Overview' ? 'Export summary (CSV)' : tab === 'Attendance' ? 'Export attendance to Excel' : tab === 'My DSR' ? 'Export DSRs to Excel' : tab === 'Uploads' ? 'Export uploads to Excel' : 'Export leave & permission to Excel';
+
   return (
     <Screen>
-      <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.md }}>
-        My activity
-      </Text>
+      <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: spacing.sm }}>My activity</Text>
 
-      <View style={{ flexDirection: 'row', gap: spacing.md, marginBottom: spacing.sm }}>
+      <View style={{ flexDirection: 'row', gap: spacing.md, marginBottom: spacing.xs }}>
         <View style={{ flex: 1 }}>
-          <DateField label="From" value={from} onChange={setFrom} />
+          <DateField label="From" value={from} onChange={(v) => { setFrom(v); if (to < v) setTo(v); }} />
         </View>
         <View style={{ flex: 1 }}>
-          <DateField label="To" value={to} onChange={setTo} />
+          <DateField label="To" value={to} onChange={(v) => { setTo(v); if (from > v) setFrom(v); }} />
         </View>
       </View>
-      <Field
-        label="Search beneficiary or file"
-        value={query}
-        onChangeText={setQuery}
-        placeholder="e.g. Canal road, photo"
-      />
+      <Field value={query} onChangeText={setQuery} placeholder="Search..." />
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={{ height: 40, flexGrow: 0, marginBottom: spacing.sm }}
-        contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
-      >
-        {TABS.map((t) => {
-          const active = tab === t;
-          return (
-            <TouchableOpacity
-              key={t}
-              onPress={() => setTab(t)}
-              style={{
-                height: 32,
-                justifyContent: 'center',
-                paddingHorizontal: 12,
-                marginRight: spacing.xs,
-                borderRadius: 16,
-                borderWidth: 1,
-                borderColor: active ? colors.primary : colors.border,
-                backgroundColor: active ? colors.primary : colors.chipBg,
-              }}
-            >
-              <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: '600', color: active ? '#fff' : colors.text }}>
-                {t}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.xs }}>
+        {TABS.map((t) => (
+          <Chip key={t} label={t} active={tab === t} onPress={() => setTab(t)} />
+        ))}
+      </View>
 
-      <SecondaryButton
-        title={exporting ? 'Exporting...' : 'Export to Excel'}
-        onPress={exportToExcel}
-        disabled={exporting}
-        style={{ marginBottom: spacing.md }}
-      />
+      <SecondaryButton title={exporting ? 'Exporting...' : exportLabel} onPress={doExport} disabled={exporting} style={{ marginBottom: spacing.md }} />
 
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: spacing.xl }}>
+        {/* ---------------------------------------------------------- Overview */}
         {tab === 'Overview' && (
-          <Card>
-            <View style={{ flexDirection: 'row' }}>
-              <View style={{ flex: 1, alignItems: 'center' }}>
-                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>{new Set(myAttendance.map((a) => a.date)).size}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>Days attended</Text>
+          <>
+            <Card>
+              <Text style={{ fontWeight: '700', color: colors.text }}>{from} to {to}</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                <Stat value={daysAttended} label="Days attended" />
+                <Stat value={myAttendance.length} label="Attendance records" />
+                <Stat value={submittedDsrs} label="DSRs submitted" sub={myDsrs.length !== submittedDsrs ? `${myDsrs.length - submittedDsrs} draft` : undefined} />
+                <Stat value={myUploads.length} label="Files uploaded" />
               </View>
-              <View style={{ flex: 1, alignItems: 'center' }}>
-                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>{myAttendance.length}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>Attendance records</Text>
-              </View>
-              <View style={{ flex: 1, alignItems: 'center' }}>
-                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text }}>{myUploads.length}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>Files uploaded</Text>
-              </View>
-            </View>
-          </Card>
+            </Card>
+
+            <Card>
+              <Text style={{ fontWeight: '700', color: colors.text }}>{beneficiary ? benLabel(beneficiary) : 'No beneficiary assigned'}</Text>
+              <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                {beneficiary ? 'The lists you keep for your beneficiary, as they are now' : 'Ask your admin to allocate you to a beneficiary.'}
+              </Text>
+              {beneficiary ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                  <Stat value={counts.students} label="Students" />
+                  <Stat value={counts.bookTitles} label="Books" sub={`${counts.bookCopies} copies`} />
+                  <Stat value={counts.stockItems} label="Material stock" sub={`${counts.stockQty} in total`} />
+                </View>
+              ) : null}
+            </Card>
+          </>
         )}
 
-        {tab === 'Uploads' &&
-          myUploads.map((u) => (
-            <Card key={u.id}>
-              <Text style={{ fontWeight: '700', color: colors.text }}>{u.fileName}</Text>
-              <Text style={{ color: colors.textMuted, fontSize: 13 }}>{u.date}</Text>
-              {u.fileUrl ? (
-                <SecondaryButton title="View" onPress={() => Linking.openURL(u.fileUrl)} style={{ marginTop: spacing.sm }} />
-              ) : (
-                <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>
-                  No file attached -- metadata only.
-                </Text>
-              )}
-            </Card>
-          ))}
-
+        {/* -------------------------------------------------------- Attendance */}
         {tab === 'Attendance' &&
           (myAttendance.length === 0 ? (
             <Text style={{ color: colors.textMuted }}>No attendance records for this range.</Text>
           ) : (
-            myAttendance
-              .slice()
-              .sort((a, b) => (a.date < b.date ? 1 : -1))
-              .map((a) => {
-                const b = db.beneficiaries.find((x) => x.id === a.beneficiaryId);
-                return (
-                  <Card key={a.id}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontWeight: '700', color: colors.text }}>{a.date}</Text>
-                    </View>
-                    <Text style={{ color: colors.textMuted, fontSize: 13 }}>
-                      {b?.school} {b?.class} {b?.section}
-                    </Text>
-                    <Text style={{ color: colors.text, fontSize: 13 }}>
-                      Time in: {a.timeIn || '--'}   Time out: {a.timeOut || '--'}
-                    </Text>
-                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                      {a.geoVerified ? 'Geofence verified' : 'Not geofence-verified'}
-                    </Text>
-                  </Card>
-                );
-              })
+            myAttendance.map((a) => (
+              <Card key={a.id}>
+                <Text style={{ fontWeight: '700', color: colors.text }}>{a.date}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 13 }}>{benName(a.beneficiaryId)}</Text>
+                <Text style={{ color: colors.text, fontSize: 13 }}>
+                  Time in: {a.timeIn || '--'}   Time out: {a.timeOut || '--'}
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12 }}>{a.geoVerified ? 'Geofence verified' : 'Not geofence-verified'}</Text>
+              </Card>
+            ))
           ))}
+
+        {/* ------------------------------------------------------------ My DSR */}
+        {tab === 'My DSR' &&
+          (myDsrs.length === 0 ? (
+            <Text style={{ color: colors.textMuted }}>No DSRs for this range.</Text>
+          ) : (
+            myDsrs.map((d) => {
+              const open = expandedDsr === d.id;
+              return (
+                <Card key={d.id}>
+                  <TouchableOpacity onPress={() => setExpandedDsr(open ? null : d.id)} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Ionicons name={open ? 'chevron-down' : 'chevron-forward'} size={16} color={colors.primary} />
+                    <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                      <Text style={{ fontWeight: '700', color: colors.text }}>{d.dsrDate}</Text>
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                        {benName(d.beneficiaryId)} - {d.status === 'Submitted' ? 'Submitted' : 'Draft (not submitted)'}
+                      </Text>
+                    </View>
+                    {d.overallRag ? <RagChip rag={d.overallRag} /> : null}
+                  </TouchableOpacity>
+                  {open && (
+                    <View style={{ marginTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing.sm }}>
+                      <DsrSummary dsr={d} db={db} />
+                    </View>
+                  )}
+                </Card>
+              );
+            })
+          ))}
+
+        {/* ----------------------------------------------------------- Uploads */}
+        {tab === 'Uploads' &&
+          (myUploads.length === 0 ? (
+            <Text style={{ color: colors.textMuted }}>No uploads for this range.</Text>
+          ) : (
+            myUploads.map((u) => (
+              <Card key={u.id}>
+                <Text style={{ fontWeight: '700', color: colors.text }}>{u.fileName}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 13 }}>
+                  {u.date} - {benName(u.beneficiaryId)}
+                </Text>
+                {u.materialId ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>{materialName(u.materialId)}</Text> : null}
+                {u.description ? <Text style={{ color: colors.text, fontSize: 12 }}>{u.description}</Text> : null}
+                {u.fileUrl ? (
+                  <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+                    <View style={{ flex: 1 }}>
+                      <SecondaryButton title="View" onPress={() => viewFile(u.fileUrl)} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <SecondaryButton title="Download" onPress={() => downloadFile(u)} />
+                    </View>
+                  </View>
+                ) : (
+                  <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>No file attached -- details only.</Text>
+                )}
+              </Card>
+            ))
+          ))}
+
+        {/* ------------------------------------------------------------- Leave */}
+        {tab === 'Leave' && (
+          <>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
+              {['All', 'Pending', 'Approved', 'Rejected'].map((s) => (
+                <Chip
+                  key={s}
+                  label={`${s} (${s === 'All' ? myLeave.length : myLeave.filter((r) => r.status === s).length})`}
+                  active={leaveStatus === s}
+                  onPress={() => setLeaveStatus(s)}
+                />
+              ))}
+            </View>
+            {leaveShown.length === 0 ? (
+              <Text style={{ color: colors.textMuted }}>
+                {myLeave.length === 0 ? 'No leave or permission requests for this range.' : 'No requests with that status.'}
+              </Text>
+            ) : (
+              leaveShown.map((r) => (
+                <Card key={r.id}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={{ fontWeight: '700', color: colors.text, flexShrink: 1 }}>{leaveSummary(r)}</Text>
+                    <View style={{ marginLeft: spacing.sm }}>
+                      <LeaveStatusBadge status={r.status} />
+                    </View>
+                  </View>
+                  {r.reason ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>Reason: {r.reason}</Text> : null}
+                  {r.adminRemarks ? <Text style={{ color: colors.text, fontSize: 12 }}>Admin: {r.adminRemarks}</Text> : null}
+                  {r.updatedAt ? <Text style={{ color: colors.textMuted, fontSize: 11 }}>Updated {String(r.updatedAt).slice(0, 10)}</Text> : null}
+                </Card>
+              ))
+            )}
+            <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: spacing.xs }}>To ask for leave or permission, use the Attendance tab.</Text>
+          </>
+        )}
       </ScrollView>
     </Screen>
   );

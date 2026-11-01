@@ -267,8 +267,8 @@ function MaterialPicker({ materials, value, onSelect, disabled, placeholder }) {
 }
 
 // Read-only view of a DSR: a saved one (lines come from the database) or a
-// queued one (lines are passed in).
-function DsrSummary({ dsr, db, lines: linesOverride }) {
+// queued one (lines are passed in). Also used by the facilitator dashboard.
+export function DsrSummary({ dsr, db, lines: linesOverride }) {
   const lines =
     linesOverride ||
     db.dsrDetail
