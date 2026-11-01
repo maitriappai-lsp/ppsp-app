@@ -14,7 +14,8 @@
 //   * What you type is also kept on the phone as you go, so a closed app or a
 //     dropped connection doesn't lose a long checklist.
 //
-// "Mine" lists the audits you recorded; "All" lets you read the others'.
+// "Mine" lists the audits you recorded; "All" lets you read the others'. The
+// list can be searched, limited to a date range, and exported to Excel.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, Text, View, Alert, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,6 +25,8 @@ import { apiPost } from '../../data/api';
 import { loadLocalDraft, saveLocalDraft, clearLocalDraft } from '../../data/dsrOutbox';
 import { todayLocalYMD, nowHHMM } from '../../utils/date';
 import { Screen, Card, Chip, Field, Select, DateField, TimeField, PrimaryButton, SecondaryButton, SectionLabel } from '../../components/UI';
+import FilterBar from '../../components/FilterBar';
+import { exportTable } from '../../utils/exportTable';
 import { colors, spacing } from '../../theme';
 
 const FLAGS = [
@@ -192,17 +195,20 @@ function AuditEditor({ id, onClose, onSaved }) {
   const facilitatorOptions = useMemo(
     () =>
       db.resources
-        .filter((r) => (r.role === 'Facilitator' || r.role === 'Audit Facilitator') && r.active !== false)
+        // you can't audit yourself, so the logged-in auditor is never listed
+        .filter((r) => (r.role === 'Facilitator' || r.role === 'Audit Facilitator') && r.active !== false && r.id !== me)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
         .map((r) => ({ value: r.id, label: r.name })),
-    [db.resources]
+    [db.resources, me]
   );
   const resName = (rid) => db.resources.find((r) => r.id === rid)?.name || '--';
 
   // Choosing a beneficiary fills in the facilitators allocated to it (changeable).
   function chooseBeneficiary(bid) {
     const alloc = db.allocations.find((a) => a.active !== false && a.beneficiaryId === bid);
-    patch({ beneficiaryId: bid, facilitator1Id: alloc?.resource1Id || '', facilitator2Id: alloc?.resource2Id || '' });
+    // (leaving out the auditor themselves, if they happen to be allocated there)
+    const there = [alloc?.resource1Id, alloc?.resource2Id].filter((rid) => rid && rid !== me);
+    patch({ beneficiaryId: bid, facilitator1Id: there[0] || '', facilitator2Id: there[1] || '' });
   }
 
   const nextVisit = useMemo(() => {
@@ -246,6 +252,7 @@ function AuditEditor({ id, onClose, onSaved }) {
     }
     if (h.timeFrom && h.timeTo && minutes(h.timeTo) <= minutes(h.timeFrom)) return 'The end time must be after the start time.';
     if (h.facilitator1Id && h.facilitator1Id === h.facilitator2Id) return 'Facilitator 1 and Facilitator 2 must be different people.';
+    if (h.facilitator1Id === me || h.facilitator2Id === me) return "You can't audit yourself. Choose the other facilitator(s).";
     return null;
   }
 
@@ -440,18 +447,47 @@ function AuditList({ onOpen }) {
   const { db } = useData();
   const me = currentUser?.id;
   const [scope, setScope] = useState('mine');
+  const [query, setQuery] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const resName = (rid) => db.resources.find((r) => r.id === rid)?.name || '--';
   const activeQuestions = db.auditCategories.filter((c) => !c.isHeading && c.active !== false).length;
 
+  const q = query.trim().toLowerCase();
   const rows = useMemo(
     () =>
       db.audits
         .filter((a) => scope === 'all' || a.auditorId === me)
+        .filter((a) => (!from || a.auditDate >= from) && (!to || a.auditDate <= to))
+        .filter((a) => {
+          if (!q) return true;
+          const text = [
+            benLabel(db.beneficiaries.find((b) => b.id === a.beneficiaryId)),
+            resName(a.facilitator1Id),
+            a.facilitator2Id ? resName(a.facilitator2Id) : '',
+            resName(a.auditorId),
+            a.status,
+            `visit ${a.visitNumber}`,
+            a.visitRemarks || '',
+            a.auditDate,
+          ];
+          return text.join(' ').toLowerCase().includes(q);
+        })
         .slice()
         .sort((a, b) => String(b.auditDate).localeCompare(String(a.auditDate)) || (b.visitNumber || 0) - (a.visitNumber || 0)),
-    [db.audits, scope, me]
+    [db.audits, db.beneficiaries, db.resources, scope, me, from, to, q] // eslint-disable-line react-hooks/exhaustive-deps
   );
+
+  async function exportShown() {
+    setExporting(true);
+    try {
+      await exportTable('audits', rows.map((a) => a.id)); // each audit's answers come as a second sheet
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
     <Screen>
@@ -464,10 +500,16 @@ function AuditList({ onOpen }) {
         <Chip label="All audits" active={scope === 'all'} onPress={() => setScope('all')} />
       </View>
 
+      <FilterBar query={query} onQuery={setQuery} from={from} onFrom={setFrom} to={to} onTo={setTo} placeholder="Search beneficiary, facilitator, visit..." />
+
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: spacing.xl }}>
         {rows.length === 0 && (
           <Text style={{ color: colors.textMuted }}>
-            {scope === 'mine' ? 'You have not recorded any audits yet. Tap the button above to start one.' : 'No audits have been recorded yet.'}
+            {query || from || to
+              ? 'No audits match your search or dates.'
+              : scope === 'mine'
+                ? 'You have not recorded any audits yet. Tap the button above to start one.'
+                : 'No audits have been recorded yet.'}
           </Text>
         )}
         {rows.map((a) => {
@@ -495,6 +537,14 @@ function AuditList({ onOpen }) {
             </TouchableOpacity>
           );
         })}
+        {rows.length > 0 && (
+          <SecondaryButton
+            title={exporting ? 'Exporting...' : `Export ${query || from || to ? 'shown' : 'all'} audits to Excel`}
+            onPress={exportShown}
+            disabled={exporting}
+            style={{ marginTop: spacing.sm }}
+          />
+        )}
       </ScrollView>
     </Screen>
   );

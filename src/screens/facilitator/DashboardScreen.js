@@ -1,39 +1,70 @@
 // SCREEN (Facilitator): Dashboard -- the facilitator's own activity for a date range.
 //
-//   Overview    counts for the range (days attended, attendance records, DSRs, files
-//               uploaded) plus the current counts for their beneficiary: students,
-//               books and material stock                         [view only]
+//   Overview    counts for the range (days attended, attendance records, DSRs)
+//               plus the current counts for their beneficiary: students, books
+//               and material stock                               [view only]
 //   Attendance  their check-ins                                  [view only]
 //   My DSR      the DSRs they filed (tap one to read it)          [view only]
-//   Uploads     the files they uploaded -- view or download each
 //   Leave       the leave and permission requests they made, and whether they were
 //               approved ("requested and granted")                [view only; new
 //               requests are made on the Attendance screen]
 //
 // Every tab can be exported (Excel; the Overview as a CSV summary). A search box
-// filters whichever tab is showing.
+// filters whichever tab is showing. (Their uploads are on the Uploads tab, which
+// has its own search, dates, view, download and export.)
 import React, { useMemo, useState } from 'react';
 import { ScrollView, Text, View, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../data/store';
-import { Screen, Card, Chip, Field, RagChip, SecondaryButton, DateField } from '../../components/UI';
+import { Screen, Card, Field, RagChip, SecondaryButton, DateField } from '../../components/UI';
 import { LeaveStatusBadge, leaveSummary } from '../../components/LeaveParts';
 import { DsrSummary } from './DsrScreen';
 import { exportTable, exportReport, exportCsv } from '../../utils/exportTable';
-import { viewFile, downloadFile } from '../../utils/fileActions';
 import { colors, spacing } from '../../theme';
 import { todayLocalYMD } from '../../utils/date';
 
-const TABS = ['Overview', 'Attendance', 'My DSR', 'Uploads', 'Leave'];
+const TABS = ['Overview', 'Attendance', 'My DSR', 'Leave'];
 
 function benLabel(b) {
   return b ? `${b.school}${b.class ? ' - ' + b.class : ''}${b.section ? ' ' + b.section : ''}` : '--';
 }
 
+// A row of equal-width pills on ONE line (a label, and optionally a count under it).
+function PillRow({ items, value, onChange }) {
+  return (
+    <View style={{ flexDirection: 'row', marginBottom: spacing.sm }}>
+      {items.map((it, i) => {
+        const on = value === it.key;
+        return (
+          <TouchableOpacity
+            key={it.key}
+            onPress={() => onChange(it.key)}
+            style={{
+              flex: 1,
+              marginRight: i < items.length - 1 ? spacing.xs : 0,
+              paddingVertical: 7,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: on ? colors.primary : colors.border,
+              backgroundColor: on ? colors.primary : colors.chipBg,
+              alignItems: 'center',
+            }}
+          >
+            <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: '700', color: on ? '#fff' : colors.text }}>{it.label}</Text>
+            {it.count !== undefined ? (
+              <Text style={{ fontSize: 13, fontWeight: '800', color: on ? '#fff' : colors.textMuted }}>{it.count}</Text>
+            ) : null}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
 function Stat({ value, label, sub }) {
   return (
-    <View style={{ width: '50%', alignItems: 'center', paddingVertical: spacing.sm }}>
+    <View style={{ width: '33.33%', alignItems: 'center', paddingVertical: spacing.sm }}>
       <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text }}>{value}</Text>
       <Text style={{ color: colors.textMuted, fontSize: 12, textAlign: 'center' }}>{label}</Text>
       {sub ? <Text style={{ color: colors.textMuted, fontSize: 11, textAlign: 'center' }}>{sub}</Text> : null}
@@ -57,10 +88,6 @@ export default function DashboardScreen() {
 
   const q = query.trim().toLowerCase();
   const benName = (id) => benLabel(db.beneficiaries.find((b) => b.id === id));
-  const materialName = (id) => {
-    const m = db.materialMaster.find((x) => x.id === id);
-    return m ? `${m.name}${m.type ? ' (' + m.type + ')' : ''}` : '';
-  };
 
   // ---- the data, for the date range -------------------------------------
   const myAttendance = useMemo(
@@ -79,15 +106,6 @@ export default function DashboardScreen() {
         .filter((d) => !q || `${benName(d.beneficiaryId)} ${d.dsrDate} ${d.status} ${d.overallRag || ''} ${d.remarks || ''}`.toLowerCase().includes(q))
         .sort((a, b) => String(b.dsrDate).localeCompare(String(a.dsrDate))),
     [db.dsr, db.beneficiaries, me, from, to, q] // eslint-disable-line react-hooks/exhaustive-deps
-  );
-
-  const myUploads = useMemo(
-    () =>
-      db.uploads
-        .filter((u) => u.facilitatorId === me && u.date >= from && u.date <= to)
-        .filter((u) => !q || `${u.fileName} ${u.description || ''} ${materialName(u.materialId)} ${benName(u.beneficiaryId)}`.toLowerCase().includes(q))
-        .sort((a, b) => String(b.date).localeCompare(String(a.date))),
-    [db.uploads, db.materialMaster, db.beneficiaries, me, from, to, q] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // A leave counts for the range if any of its days fall in it; a permission by its date.
@@ -141,7 +159,6 @@ export default function DashboardScreen() {
           ['Days attended', daysAttended],
           ['Attendance records', myAttendance.length],
           ['DSRs submitted', submittedDsrs],
-          ['Files uploaded', myUploads.length],
           ['', ''],
           ['Current lists for my beneficiary', ''],
           ['Students', counts.students],
@@ -154,8 +171,6 @@ export default function DashboardScreen() {
         await exportReport('attendance', { from, to, facilitatorId: me });
       } else if (tab === 'My DSR') {
         await exportTable('dsr', myDsrs.map((d) => d.id));
-      } else if (tab === 'Uploads') {
-        await exportReport('uploads', { from, to, facilitatorId: me });
       } else {
         await exportTable('leaveRequests', leaveShown.map((r) => r.id));
       }
@@ -165,7 +180,7 @@ export default function DashboardScreen() {
   }
 
   const exportLabel =
-    tab === 'Overview' ? 'Export summary (CSV)' : tab === 'Attendance' ? 'Export attendance to Excel' : tab === 'My DSR' ? 'Export DSRs to Excel' : tab === 'Uploads' ? 'Export uploads to Excel' : 'Export leave & permission to Excel';
+    tab === 'Overview' ? 'Export summary (CSV)' : tab === 'Attendance' ? 'Export attendance to Excel' : tab === 'My DSR' ? 'Export DSRs to Excel' : 'Export leave & permission to Excel';
 
   return (
     <Screen>
@@ -181,11 +196,7 @@ export default function DashboardScreen() {
       </View>
       <Field value={query} onChangeText={setQuery} placeholder="Search..." />
 
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.xs }}>
-        {TABS.map((t) => (
-          <Chip key={t} label={t} active={tab === t} onPress={() => setTab(t)} />
-        ))}
-      </View>
+      <PillRow items={TABS.map((t) => ({ key: t, label: t }))} value={tab} onChange={setTab} />
 
       <SecondaryButton title={exporting ? 'Exporting...' : exportLabel} onPress={doExport} disabled={exporting} style={{ marginBottom: spacing.md }} />
 
@@ -199,7 +210,6 @@ export default function DashboardScreen() {
                 <Stat value={daysAttended} label="Days attended" />
                 <Stat value={myAttendance.length} label="Attendance records" />
                 <Stat value={submittedDsrs} label="DSRs submitted" sub={myDsrs.length !== submittedDsrs ? `${myDsrs.length - submittedDsrs} draft` : undefined} />
-                <Stat value={myUploads.length} label="Files uploaded" />
               </View>
             </Card>
 
@@ -265,48 +275,18 @@ export default function DashboardScreen() {
             })
           ))}
 
-        {/* ----------------------------------------------------------- Uploads */}
-        {tab === 'Uploads' &&
-          (myUploads.length === 0 ? (
-            <Text style={{ color: colors.textMuted }}>No uploads for this range.</Text>
-          ) : (
-            myUploads.map((u) => (
-              <Card key={u.id}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>{u.fileName}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 13 }}>
-                  {u.date} - {benName(u.beneficiaryId)}
-                </Text>
-                {u.materialId ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>{materialName(u.materialId)}</Text> : null}
-                {u.description ? <Text style={{ color: colors.text, fontSize: 12 }}>{u.description}</Text> : null}
-                {u.fileUrl ? (
-                  <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
-                    <View style={{ flex: 1 }}>
-                      <SecondaryButton title="View" onPress={() => viewFile(u.fileUrl)} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <SecondaryButton title="Download" onPress={() => downloadFile(u)} />
-                    </View>
-                  </View>
-                ) : (
-                  <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: spacing.sm }}>No file attached -- details only.</Text>
-                )}
-              </Card>
-            ))
-          ))}
-
         {/* ------------------------------------------------------------- Leave */}
         {tab === 'Leave' && (
           <>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
-              {['All', 'Pending', 'Approved', 'Rejected'].map((s) => (
-                <Chip
-                  key={s}
-                  label={`${s} (${s === 'All' ? myLeave.length : myLeave.filter((r) => r.status === s).length})`}
-                  active={leaveStatus === s}
-                  onPress={() => setLeaveStatus(s)}
-                />
-              ))}
-            </View>
+            <PillRow
+              items={['All', 'Pending', 'Approved', 'Rejected'].map((st) => ({
+                key: st,
+                label: st,
+                count: st === 'All' ? myLeave.length : myLeave.filter((r) => r.status === st).length,
+              }))}
+              value={leaveStatus}
+              onChange={setLeaveStatus}
+            />
             {leaveShown.length === 0 ? (
               <Text style={{ color: colors.textMuted }}>
                 {myLeave.length === 0 ? 'No leave or permission requests for this range.' : 'No requests with that status.'}

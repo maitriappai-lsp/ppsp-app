@@ -6,8 +6,9 @@
 // fileUrl.
 //
 // Layout: the list of my uploads comes first, with a round "+" button at the
-// top right. Tapping "+" opens the upload form in a popup. The row action
-// (view) is a compact icon.
+// top right. Tapping "+" opens the upload form in a popup. Each upload can be
+// viewed or downloaded, the list can be searched and limited to a date range,
+// and what is shown can be exported to Excel.
 import React, { useState } from 'react';
 import {
   ScrollView,
@@ -27,6 +28,9 @@ import { useData } from '../../data/store';
 import { apiPost } from '../../data/api';
 import { todayLocalYMD } from '../../utils/date';
 import { Screen, Card, SectionLabel, Field, Select, PrimaryButton, SecondaryButton } from '../../components/UI';
+import FilterBar from '../../components/FilterBar';
+import { exportReport } from '../../utils/exportTable';
+import { viewFile, downloadFile } from '../../utils/fileActions';
 import { colors, spacing } from '../../theme';
 
 // Round "+" button shown at the top-right of the list.
@@ -142,6 +146,10 @@ export default function UploadsScreen() {
   const [picked, setPicked] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [query, setQuery] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   // "Link to Materials/Work": the material master as category / name (type).
   const materialOptions = [
@@ -160,7 +168,32 @@ export default function UploadsScreen() {
   const myUploads = db.uploads
     .filter((u) => u.facilitatorId === currentUser?.id)
     .slice()
-    .reverse();
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id)));
+
+  // What is shown: matches the search text and falls within the dates (if set).
+  const q = query.trim().toLowerCase();
+  const shown = myUploads.filter((u) => {
+    if (from && u.date < from) return false;
+    if (to && u.date > to) return false;
+    if (!q) return true;
+    const b = db.beneficiaries.find((x) => x.id === u.beneficiaryId);
+    const m = db.materialMaster.find((x) => x.id === u.materialId);
+    return `${u.fileName} ${u.description || ''} ${b?.school || ''} ${b?.class || ''} ${m?.name || ''} ${m?.category || ''}`.toLowerCase().includes(q);
+  });
+
+  async function exportShown() {
+    setExporting(true);
+    try {
+      await exportReport('uploads', {
+        from: from || '1900-01-01',
+        to: to || '2999-12-31',
+        facilitatorId: currentUser?.id,
+        ids: shown.map((u) => u.id).join(','),
+      });
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function closeAdd() {
     setShowAdd(false);
@@ -222,6 +255,8 @@ export default function UploadsScreen() {
           addLabel="Upload a file"
         />
 
+        <FilterBar query={query} onQuery={setQuery} from={from} onFrom={setFrom} to={to} onTo={setTo} placeholder="Search file, description, school or material..." />
+
         <AddModal visible={showAdd} title="Upload a file" onClose={closeAdd}>
           <SectionLabel>Link to beneficiary</SectionLabel>
           <Select
@@ -253,12 +288,12 @@ export default function UploadsScreen() {
           <PrimaryButton title={uploading ? 'Uploading...' : 'Upload'} onPress={upload} disabled={!picked || uploading} />
         </AddModal>
 
-        {myUploads.length === 0 && (
+        {shown.length === 0 && (
           <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
-            No uploads yet. Tap + to upload your first file.
+            {myUploads.length === 0 ? 'No uploads yet. Tap + to upload your first file.' : 'No uploads match your search or dates.'}
           </Text>
         )}
-        {myUploads.slice(0, 20).map((u) => {
+        {shown.map((u) => {
           const b = db.beneficiaries.find((x) => x.id === u.beneficiaryId);
           const m = db.materialMaster.find((x) => x.id === u.materialId);
           return (
@@ -275,14 +310,13 @@ export default function UploadsScreen() {
                       {m.type ? ` (${m.type})` : ''} - {m.category}
                     </Text>
                   ) : null}
+                  {u.description ? <Text style={{ color: colors.text, fontSize: 12 }}>{u.description}</Text> : null}
                 </View>
                 {u.fileUrl ? (
-                  <IconButton
-                    name="open-outline"
-                    color={colors.primary}
-                    label="View"
-                    onPress={() => Linking.openURL(u.fileUrl)}
-                  />
+                  <View style={{ flexDirection: 'row' }}>
+                    <IconButton name="eye-outline" color={colors.primary} label="View" onPress={() => viewFile(u.fileUrl)} />
+                    <IconButton name="download-outline" color={colors.primary} label="Download" onPress={() => downloadFile(u)} />
+                  </View>
                 ) : (
                   <Text style={{ color: colors.textMuted, fontSize: 12 }}>No file</Text>
                 )}
@@ -290,10 +324,13 @@ export default function UploadsScreen() {
             </Card>
           );
         })}
-        {myUploads.length > 20 && (
-          <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
-            Showing your latest 20 uploads.
-          </Text>
+        {shown.length > 0 && (
+          <SecondaryButton
+            title={exporting ? 'Exporting...' : `Export ${shown.length === myUploads.length ? 'all' : 'shown'} uploads to Excel`}
+            onPress={exportShown}
+            disabled={exporting}
+            style={{ marginBottom: spacing.xl }}
+          />
         )}
       </ScrollView>
     </Screen>
