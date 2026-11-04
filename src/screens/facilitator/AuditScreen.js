@@ -14,6 +14,10 @@
 //   * What you type is also kept on the phone as you go, so a closed app or a
 //     dropped connection doesn't lose a long checklist.
 //
+// The ADMIN dashboard reuses AuditEditor in `adminMode`: the admin can add an audit
+// for anyone, change one that was already submitted, choose who recorded it and set
+// its status (saved through /api/audit/admin-save).
+//
 // "Mine" lists the audits you recorded; "All" lets you read the others'. The
 // list can be searched, limited to a date range, and exported to Excel.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -125,14 +129,14 @@ function Question({ category, answer, onChange, readOnly }) {
 // ---------------------------------------------------------------------------
 // The editor: a new audit, a saved draft, or (read-only) a submitted one.
 // ---------------------------------------------------------------------------
-function AuditEditor({ id, onClose, onSaved }) {
+export function AuditEditor({ id, onClose, onSaved, adminMode = false }) {
   const { currentUser } = useAuth();
   const { db, refresh } = useData();
   const me = currentUser?.id;
   const today = todayLocalYMD();
 
   const existing = id ? db.audits.find((a) => a.id === id) : null;
-  const readOnly = !!existing && (existing.status === 'Submitted' || existing.auditorId !== me);
+  const readOnly = !adminMode && !!existing && (existing.status === 'Submitted' || existing.auditorId !== me);
 
   const answersFromDb = () => {
     const map = {};
@@ -156,6 +160,9 @@ function AuditEditor({ id, onClose, onSaved }) {
   const [answers, setAnswers] = useState(answersFromDb);
   const [open, setOpen] = useState({});
   const [saving, setSaving] = useState(false);
+  // admin only: who recorded it, and whether it is a draft or submitted
+  const [auditorId, setAuditorId] = useState(existing?.auditorId || '');
+  const [status, setStatus] = useState(existing?.status || 'Submitted');
   const [restored, setRestored] = useState(false);
   const readyRef = useRef(false);
   const backupKey = `audit|${id || 'new'}|${me}`;
@@ -202,6 +209,10 @@ function AuditEditor({ id, onClose, onSaved }) {
     [db.resources, me]
   );
   const resName = (rid) => db.resources.find((r) => r.id === rid)?.name || '--';
+  // admin: who can be named as having recorded the audit
+  const recorderOptions = db.resources
+    .filter((r) => r.role === 'Audit Facilitator' && r.active !== false)
+    .map((r) => ({ value: r.id, label: r.name }));
 
   // Choosing a beneficiary fills in the facilitators allocated to it (changeable).
   function chooseBeneficiary(bid) {
@@ -252,22 +263,23 @@ function AuditEditor({ id, onClose, onSaved }) {
     }
     if (h.timeFrom && h.timeTo && minutes(h.timeTo) <= minutes(h.timeFrom)) return 'The end time must be after the start time.';
     if (h.facilitator1Id && h.facilitator1Id === h.facilitator2Id) return 'Facilitator 1 and Facilitator 2 must be different people.';
-    if (h.facilitator1Id === me || h.facilitator2Id === me) return "You can't audit yourself. Choose the other facilitator(s).";
+    if (!adminMode && (h.facilitator1Id === me || h.facilitator2Id === me)) return "You can't audit yourself. Choose the other facilitator(s).";
     return null;
   }
 
   async function send(submit) {
     setSaving(true);
     try {
-      const res = await apiPost('/api/audit/save', {
-        id: id || undefined,
-        submit,
-        header: h,
-        details: Object.entries(answers).map(([categoryNo, a]) => ({ categoryNo, statusFlag: a.statusFlag, rating: a.rating, remarks: a.remarks })),
-      });
+      const details = Object.entries(answers).map(([categoryNo, a]) => ({ categoryNo, statusFlag: a.statusFlag, rating: a.rating, remarks: a.remarks }));
+      const res = adminMode
+        ? await apiPost('/api/audit/admin-save', { id: id || undefined, auditorId: auditorId || undefined, status, header: h, details })
+        : await apiPost('/api/audit/save', { id: id || undefined, submit, header: h, details });
       await refresh();
       await clearLocalDraft(backupKey);
-      if (submit) {
+      if (adminMode) {
+        Alert.alert('Saved', 'The audit has been saved.');
+        onClose();
+      } else if (submit) {
         Alert.alert('Submitted', "The audit has been submitted. It can't be changed now.");
         onClose();
       } else if (!id) {
@@ -280,6 +292,14 @@ function AuditEditor({ id, onClose, onSaved }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  // admin: one Save, with the status chosen on the form
+  function saveAsAdmin() {
+    const submit = status === 'Submitted';
+    const p = problem(submit);
+    if (p) return Alert.alert('Check the audit', p);
+    send(submit);
   }
 
   function save(submit) {
@@ -315,7 +335,7 @@ function AuditEditor({ id, onClose, onSaved }) {
       <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: spacing.xl }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
           <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginRight: spacing.sm }}>
-            {existing ? `Audit - visit ${existing.visitNumber}` : 'New audit visit'}
+            {existing ? `${adminMode ? 'Edit audit' : 'Audit'} - visit ${existing.visitNumber}` : adminMode ? 'Add audit' : 'New audit visit'}
           </Text>
           {existing ? <StatusBadge status={existing.status} /> : null}
         </View>
@@ -370,6 +390,19 @@ function AuditEditor({ id, onClose, onSaved }) {
               placeholder="None"
             />
             <Field label="Visit remarks (optional)" value={h.visitRemarks} onChangeText={(v) => patch({ visitRemarks: v })} multiline />
+            {adminMode ? (
+              <>
+                <SectionLabel>Recorded by</SectionLabel>
+                <Select
+                  value={auditorId}
+                  onSelect={setAuditorId}
+                  options={[{ value: '', label: existing ? 'Keep as is' : 'Me (admin)' }, ...recorderOptions]}
+                  placeholder="Choose..."
+                />
+                <SectionLabel>Status</SectionLabel>
+                <Select value={status} onSelect={setStatus} options={[{ value: 'Draft', label: 'Draft' }, { value: 'Submitted', label: 'Submitted' }]} />
+              </>
+            ) : null}
           </Card>
         )}
 
@@ -424,7 +457,10 @@ function AuditEditor({ id, onClose, onSaved }) {
           );
         })}
 
-        {!readOnly ? (
+        {!readOnly && adminMode ? (
+          <PrimaryButton title={saving ? 'Saving...' : 'Save audit'} onPress={saveAsAdmin} disabled={saving} style={{ marginTop: spacing.md }} />
+        ) : null}
+        {!readOnly && !adminMode ? (
           <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
             <View style={{ flex: 1 }}>
               <SecondaryButton title={saving ? 'Saving...' : 'Save draft'} onPress={() => save(false)} disabled={saving} />

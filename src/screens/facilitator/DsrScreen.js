@@ -45,7 +45,7 @@ import MultiSelect from '../../components/MultiSelect';
 import { colors, spacing, ragColor } from '../../theme';
 
 const RAGS = ['Green', 'Amber', 'Red'];
-const CIRCLE_TIME = [
+export const CIRCLE_TIME = [
   'Story book',
   'Good habits',
   'Zero activity & other presentation',
@@ -158,7 +158,7 @@ function summaryFromBody(body) {
   };
 }
 
-function RagPicker({ label, value, onChange }) {
+export function RagPicker({ label, value, onChange }) {
   return (
     <View style={{ marginBottom: spacing.sm }}>
       <SectionLabel>{label}</SectionLabel>
