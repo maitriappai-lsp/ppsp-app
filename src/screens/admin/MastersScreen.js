@@ -584,6 +584,24 @@ function GeoTab() {
   // device's current location automatically (see onAdd below), so adding a
   // geofence from the actual site still needs no manual coordinate entry.
 
+  async function useCurrentLocationForEdit() {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Location permission needed', 'Enable location access to pick up your current position.');
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({});
+      setEditLat(String(pos.coords.latitude));
+      setEditLng(String(pos.coords.longitude));
+    } catch (e) {
+      Alert.alert('Could not get location', e.message || 'Please try again, or enter coordinates manually.');
+    } finally {
+      setLocating(false);
+    }
+  }
+
   async function add() {
     if (!school || !lat || !lng) return Alert.alert('Missing fields', 'School, latitude and longitude are required.');
     setSaving(true);
@@ -684,6 +702,12 @@ function GeoTab() {
               School name can't be changed here -- delete and re-add if it was mistyped.
             </Text>
             <Field label="Label (optional)" value={editLabel} onChangeText={setEditLabel} placeholder="e.g. Block A" />
+            <SecondaryButton
+              title={locating ? 'Getting current location...' : 'Use current location'}
+              onPress={useCurrentLocationForEdit}
+              disabled={locating}
+              style={{ marginBottom: spacing.md }}
+            />
             <View style={{ flexDirection: 'row', gap: spacing.md }}>
               <View style={{ flex: 1 }}>
                 <Field label="Latitude" value={editLat} onChangeText={setEditLat} keyboardType="decimal-pad" />
@@ -751,7 +775,6 @@ function normalizeSystemParameters(value) {
     productValidityEnd: p.productValidityEnd || '',
     loginByEmail: p.loginByEmail ?? false,
     gpsOnBeneficiary: p.gpsOnBeneficiary ?? true,
-    faceRecognitionEnabled: p.faceRecognitionEnabled ?? true,
     allowedUploadTypes: Array.isArray(p.allowedUploadTypes)
       ? p.allowedUploadTypes
       : ['photo', 'pdf', 'ppt'],
@@ -809,7 +832,6 @@ function SystemParametersTab() {
         productValidityEnd: form.productValidityEnd || null,
         loginByEmail: Boolean(form.loginByEmail),
         gpsOnBeneficiary: Boolean(form.gpsOnBeneficiary),
-        faceRecognitionEnabled: Boolean(form.faceRecognitionEnabled),
         allowedUploadTypes: form.allowedUploadTypes,
       });
       await refresh();
@@ -878,14 +900,9 @@ function SystemParametersTab() {
           <Chip label="No" active={form.loginByEmail === false} onPress={() => setValue('loginByEmail', false)} />
         </View>
         <SectionLabel>Enable GPS check for beneficiary attendance</SectionLabel>
-        <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
           <Chip label="Yes" active={form.gpsOnBeneficiary === true} onPress={() => setValue('gpsOnBeneficiary', true)} />
           <Chip label="No" active={form.gpsOnBeneficiary === false} onPress={() => setValue('gpsOnBeneficiary', false)} />
-        </View>
-        <SectionLabel>Enable face recognition for attendance</SectionLabel>
-        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-          <Chip label="Yes" active={form.faceRecognitionEnabled === true} onPress={() => setValue('faceRecognitionEnabled', true)} />
-          <Chip label="No" active={form.faceRecognitionEnabled === false} onPress={() => setValue('faceRecognitionEnabled', false)} />
         </View>
       </Card>
 
