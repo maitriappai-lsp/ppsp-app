@@ -751,6 +751,7 @@ function normalizeSystemParameters(value) {
     productValidityEnd: p.productValidityEnd || '',
     loginByEmail: p.loginByEmail ?? false,
     gpsOnBeneficiary: p.gpsOnBeneficiary ?? true,
+    faceRecognitionEnabled: p.faceRecognitionEnabled ?? true,
     allowedUploadTypes: Array.isArray(p.allowedUploadTypes)
       ? p.allowedUploadTypes
       : ['photo', 'pdf', 'ppt'],
@@ -808,6 +809,7 @@ function SystemParametersTab() {
         productValidityEnd: form.productValidityEnd || null,
         loginByEmail: Boolean(form.loginByEmail),
         gpsOnBeneficiary: Boolean(form.gpsOnBeneficiary),
+        faceRecognitionEnabled: Boolean(form.faceRecognitionEnabled),
         allowedUploadTypes: form.allowedUploadTypes,
       });
       await refresh();
@@ -876,9 +878,14 @@ function SystemParametersTab() {
           <Chip label="No" active={form.loginByEmail === false} onPress={() => setValue('loginByEmail', false)} />
         </View>
         <SectionLabel>Enable GPS check for beneficiary attendance</SectionLabel>
-        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+        <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
           <Chip label="Yes" active={form.gpsOnBeneficiary === true} onPress={() => setValue('gpsOnBeneficiary', true)} />
           <Chip label="No" active={form.gpsOnBeneficiary === false} onPress={() => setValue('gpsOnBeneficiary', false)} />
+        </View>
+        <SectionLabel>Enable face recognition for attendance</SectionLabel>
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+          <Chip label="Yes" active={form.faceRecognitionEnabled === true} onPress={() => setValue('faceRecognitionEnabled', true)} />
+          <Chip label="No" active={form.faceRecognitionEnabled === false} onPress={() => setValue('faceRecognitionEnabled', false)} />
         </View>
       </Card>
 
