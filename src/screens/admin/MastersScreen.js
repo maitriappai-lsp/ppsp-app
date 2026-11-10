@@ -709,7 +709,7 @@ function GeoTab() {
                   {g.school}{g.label ? ` -- ${g.label}` : ''}
                 </Text>
                 <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {g.lat.toFixed(4)}, {g.lng.toFixed(4)} - {g.radiusMeters}m
+                  {g.lat.toFixed(6)}, {g.lng.toFixed(6)} - {g.radiusMeters}m
                 </Text>
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>

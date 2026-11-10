@@ -302,6 +302,23 @@ function CheckInPanel() {
       setTimeIn(record.timeIn);
       setCheckedInGeoId(geoMatch.id);
       outsideSinceRef.current = null;
+
+      // Refresh the OS geofence monitor for every new attendance session.
+      // The task stays registered across time-outs, but refreshing the
+      // monitored regions resets the OS transition state for this session.
+      if (autoWatchMode === 'background' && db.geo?.length) {
+        registerGeofences(db.geo).then((result) => {
+          if (!result.ok) {
+            setAutoWatchFailReason(
+              result.reason + (result.message ? `: ${result.message}` : '')
+            );
+          } else {
+            setAutoWatchFailReason(null);
+          }
+        }).catch((error) => {
+          setAutoWatchFailReason(error?.message || String(error));
+        });
+      }
     } catch (e) {
       Alert.alert('Could not save time in', e.message || 'Please try again.');
     } finally {

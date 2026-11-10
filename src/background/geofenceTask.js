@@ -266,7 +266,9 @@ export async function registerGeofences(geoList) {
       latitude: g.lat,
       longitude: g.lng,
       radius: g.radiusMeters || 150,
-      notifyOnEnter: false,
+      // Track both transitions. Enter notifications do not time anyone in;
+      // they let us confirm that the OS sees re-entry before a later Exit.
+      notifyOnEnter: true,
       notifyOnExit: true,
     }));
 
