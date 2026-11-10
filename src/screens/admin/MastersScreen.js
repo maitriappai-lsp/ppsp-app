@@ -7,7 +7,7 @@
 // Layout: each tab shows its list of records first, with a round "+" button
 // at the top right. Tapping "+" opens the Add form in a bottom-sheet popup.
 // Row actions (edit / deactivate / delete) are compact icons.
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ScrollView,
   Text,
@@ -29,7 +29,7 @@ import { AddButton, IconButton, ListHeader, AddModal, ImportFromExcel } from '..
 import { MaterialsTab, StudentsTab, BooksTab, AllocationsTab, AuditCategoriesTab } from './PpspMasterTabs';
 import { colors, spacing } from '../../theme';
 
-const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Allocations', 'Students', 'Materials', 'Books', 'Audit Categories'];
+const TABS = ['Resources', 'Geo', 'Beneficiaries', 'Allocations', 'Students', 'Materials', 'Books', 'Audit Categories', 'System Parameters'];
 
 // One small icon tile per master, laid out four to a row so all eight are
 // visible at once -- no sideways scrolling to find a master.
@@ -90,6 +90,7 @@ export default function MastersScreen() {
       {tab === 'Materials' && <MaterialsTab />}
       {tab === 'Books' && <BooksTab />}
       {tab === 'Audit Categories' && <AuditCategoriesTab />}
+      {tab === 'System Parameters' && <SystemParametersTab />}
     </Screen>
   );
 }
@@ -731,6 +732,178 @@ function GeoTab() {
         )
       )}
       <ImportFromExcel label="geo" table="geo" columnsHint="School, Label, Latitude, Longitude, Radius Meters" />
+    </ScrollView>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// System Parameters -- one app-wide row stored in system_parameters.
+// The backend exposes a dedicated Admin-only save endpoint because this
+// table is intentionally not writable through the generic master CRUD API.
+// ---------------------------------------------------------------------------
+function normalizeSystemParameters(value) {
+  const p = value || {};
+  return {
+    productType: p.productType ?? 'Education',
+    orgName: p.orgName ?? 'Maitri Trust',
+    maxNamedUsers: String(p.maxNamedUsers ?? 999),
+    productValidityEnd: p.productValidityEnd || '',
+    loginByEmail: p.loginByEmail ?? false,
+    gpsOnBeneficiary: p.gpsOnBeneficiary ?? true,
+    allowedUploadTypes: Array.isArray(p.allowedUploadTypes)
+      ? p.allowedUploadTypes
+      : ['photo', 'pdf', 'ppt'],
+  };
+}
+
+function SystemParametersTab() {
+  const { db, refresh } = useData();
+  const [form, setForm] = useState(() => normalizeSystemParameters(db.systemParameters));
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Populate when the initial /api/db request completes. Do not overwrite
+  // edits while the app's 15-second background refresh is running.
+  useEffect(() => {
+    if (!dirty && db.systemParameters) {
+      setForm(normalizeSystemParameters(db.systemParameters));
+    }
+  }, [db.systemParameters, dirty]);
+
+  function setValue(key, value) {
+    setDirty(true);
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function toggleUploadType(type) {
+    const current = form.allowedUploadTypes || [];
+    const next = current.includes(type)
+      ? current.filter((item) => item !== type)
+      : [...current, type];
+    setValue('allowedUploadTypes', next);
+  }
+
+  async function save() {
+    const maxUsers = Number(form.maxNamedUsers);
+    if (!Number.isInteger(maxUsers) || maxUsers < 1) {
+      Alert.alert('Invalid user limit', 'Maximum named users must be a whole number greater than zero.');
+      return;
+    }
+    if (!form.productType.trim()) {
+      Alert.alert('Missing product type', 'Enter the product type.');
+      return;
+    }
+    if (!form.orgName.trim()) {
+      Alert.alert('Missing organisation name', 'Enter the organisation name.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await apiPost('/api/system-parameters', {
+        productType: form.productType.trim(),
+        orgName: form.orgName.trim(),
+        maxNamedUsers: maxUsers,
+        productValidityEnd: form.productValidityEnd || null,
+        loginByEmail: Boolean(form.loginByEmail),
+        gpsOnBeneficiary: Boolean(form.gpsOnBeneficiary),
+        allowedUploadTypes: form.allowedUploadTypes,
+      });
+      await refresh();
+      setDirty(false);
+      Alert.alert('Saved', 'System parameters have been updated.');
+    } catch (e) {
+      Alert.alert('Could not save', e.message || 'Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function resetChanges() {
+    setForm(normalizeSystemParameters(db.systemParameters));
+    setDirty(false);
+  }
+
+  return (
+    <ScrollView showsVerticalScrollIndicator={false}>
+      <Text style={{ fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: spacing.md }}>System Parameters</Text>
+      <Card>
+        <Text style={{ fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: spacing.md }}>
+          Product and organisation
+        </Text>
+        <Field
+          label="Product type"
+          value={form.productType}
+          onChangeText={(value) => setValue('productType', value)}
+          placeholder="e.g. Education"
+        />
+        <Field
+          label="Organisation name"
+          value={form.orgName}
+          onChangeText={(value) => setValue('orgName', value)}
+          placeholder="Organisation name"
+        />
+        <Field
+          label="Maximum named users"
+          value={form.maxNamedUsers}
+          onChangeText={(value) => setValue('maxNamedUsers', value.replace(/[^0-9]/g, ''))}
+          keyboardType="number-pad"
+          placeholder="999"
+        />
+        <DateField
+          label="Product validity end date"
+          value={form.productValidityEnd}
+          onChange={(value) => setValue('productValidityEnd', value)}
+          placeholder="No expiry date set"
+        />
+        {form.productValidityEnd ? (
+          <SecondaryButton
+            title="Clear validity date"
+            onPress={() => setValue('productValidityEnd', '')}
+            style={{ marginBottom: spacing.md }}
+          />
+        ) : null}
+      </Card>
+
+      <Card>
+        <Text style={{ fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: spacing.sm }}>
+          Login and attendance
+        </Text>
+        <SectionLabel>Allow login using email address</SectionLabel>
+        <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+          <Chip label="Yes" active={form.loginByEmail === true} onPress={() => setValue('loginByEmail', true)} />
+          <Chip label="No" active={form.loginByEmail === false} onPress={() => setValue('loginByEmail', false)} />
+        </View>
+        <SectionLabel>Enable GPS check for beneficiary attendance</SectionLabel>
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+          <Chip label="Yes" active={form.gpsOnBeneficiary === true} onPress={() => setValue('gpsOnBeneficiary', true)} />
+          <Chip label="No" active={form.gpsOnBeneficiary === false} onPress={() => setValue('gpsOnBeneficiary', false)} />
+        </View>
+      </Card>
+
+      <Card>
+        <Text style={{ fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: spacing.sm }}>
+          Allowed upload types
+        </Text>
+        <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: spacing.md }}>
+          Select the file types permitted by the system.
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm }}>
+          <Chip label="Photo" active={form.allowedUploadTypes.includes('photo')} onPress={() => toggleUploadType('photo')} />
+          <Chip label="PDF" active={form.allowedUploadTypes.includes('pdf')} onPress={() => toggleUploadType('pdf')} />
+          <Chip label="PPT" active={form.allowedUploadTypes.includes('ppt')} onPress={() => toggleUploadType('ppt')} />
+        </View>
+      </Card>
+
+      <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg }}>
+        <View style={{ flex: 1 }}>
+          <PrimaryButton title={saving ? 'Saving...' : 'Save parameters'} onPress={save} disabled={saving} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton title="Discard changes" onPress={resetChanges} disabled={saving || !dirty} />
+        </View>
+      </View>
     </ScrollView>
   );
 }
