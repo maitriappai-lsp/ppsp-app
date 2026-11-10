@@ -502,7 +502,7 @@ function CheckInPanel() {
                 <Select
                   value={beneficiaryId}
                   onSelect={setBeneficiaryId}
-                  options={candidateBeneficiaries.map((b) => ({ value: b.id, label: `${b.class} ${b.section}` }))}
+                  options={candidateBeneficiaries.map((b) => ({ value: b.id, label: `${b.school || ''} - ${b.class || ''} ${b.section || ''}`.trim() }))}
                 />
               </View>
             )}
