@@ -28,6 +28,17 @@ function dateOnly(ts) {
   return ts ? String(ts).slice(0, 10) : '--';
 }
 
+// A-Z comparison that ignores capital letters and stray spaces, and breaks ties
+// by ID so the order never jumps around. (Plain localeCompare can put
+// lower-case names after capitals, or names with a leading space first.)
+function byText(a, b, idA, idB) {
+  const x = String(a || '').trim().toLowerCase();
+  const y = String(b || '').trim().toLowerCase();
+  if (x < y) return -1;
+  if (x > y) return 1;
+  return String(idA || '').localeCompare(String(idB || ''));
+}
+
 function showError(title, e) {
   Alert.alert(title, e?.message || 'Please try again.');
 }
@@ -320,6 +331,10 @@ export function MaterialsTab() {
 // STUDENTS
 // =============================================================================
 
+// Students are shown grouped by beneficiary: each beneficiary is a collapsible
+// bar with its student count and a "+" to add a student straight into it, the
+// same way the Materials master is laid out. Everything starts collapsed, so a
+// long list (hundreds of students) stays short until you open a beneficiary.
 export function StudentsTab() {
   const { db, addRecord, updateRecord, deleteRecord, nextId } = useData();
   const { currentUser } = useAuth();
@@ -327,6 +342,8 @@ export function StudentsTab() {
 
   const [filter, setFilter] = useState('');
   const [filterBen, setFilterBen] = useState('');
+  const [open, setOpen] = useState({}); // beneficiary id -> expanded?
+  const [lastOpenedBen, setLastOpenedBen] = useState(''); // beneficiary id last expanded
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -343,25 +360,61 @@ export function StudentsTab() {
   const [eParentName, setEParentName] = useState('');
   const [eParentContact, setEParentContact] = useState('');
 
-  const rows = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return db.studentMaster
-      .filter((s) => !filterBen || s.beneficiaryId === filterBen)
-      .filter(
-        (s) =>
-          !q ||
-          [s.id, s.name, s.parentName, s.parentContact, benLabel(db.beneficiaries.find((b) => b.id === s.beneficiaryId))]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .includes(q)
-      )
-      .slice()
-      .sort((a, b) => benLabel(db.beneficiaries.find((x) => x.id === a.beneficiaryId)).localeCompare(benLabel(db.beneficiaries.find((x) => x.id === b.beneficiaryId))) || (a.name || '').localeCompare(b.name || ''));
-  }, [db.studentMaster, db.beneficiaries, filter, filterBen]);
+  // One group per beneficiary, students sorted by name.
+  const groups = useMemo(() => {
+    const map = {};
+    db.studentMaster.forEach((s) => {
+      const key = s.beneficiaryId || '';
+      if (!map[key]) {
+        const ben = db.beneficiaries.find((b) => b.id === key);
+        map[key] = { key, name: ben ? benLabel(ben) : '(no beneficiary)', items: [] };
+      }
+      map[key].items.push(s);
+    });
+    Object.values(map).forEach((g) => g.items.sort((a, b) => byText(a.name, b.name, a.id, b.id)));
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  }, [db.studentMaster, db.beneficiaries]);
+
+  // With a search, only beneficiaries with a match show (and open up), listing
+  // just the matching students unless the beneficiary name itself matched.
+  const q = filter.trim().toLowerCase();
+  const visible = useMemo(() => {
+    const hit = (s) => [s.id, s.name, s.parentName, s.parentContact].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return groups
+      .filter((g) => !filterBen || g.key === filterBen)
+      .map((g) => {
+        const shown = !q || g.name.toLowerCase().includes(q) ? g.items : g.items.filter(hit);
+        return { ...g, shown, forceOpen: !!q };
+      })
+      .filter((g) => g.shown.length > 0);
+  }, [groups, q, filterBen]);
+
+  // Number of students showing right now (the total when nothing is filtered).
+  const shownCount = visible.reduce((n, g) => n + g.shown.length, 0);
 
   function stamp() {
     return { updatedBy: currentUser?.id || '', updatedAt: new Date().toISOString() };
+  }
+
+  function isGroupOpen(g) {
+    if (g.forceOpen) return true;
+    // A single beneficiary picked in the dropdown opens by default.
+    return filterBen ? open[g.key] !== false : !!open[g.key];
+  }
+
+  function toggleGroup(g) {
+    const isOpen = isGroupOpen(g);
+    setOpen((prev) => ({ ...prev, [g.key]: !isOpen }));
+    if (!isOpen) setLastOpenedBen(g.key);
+  }
+
+  function openAdd(benKey) {
+    setBenId(benKey || '');
+    setName('');
+    setJoined('');
+    setParentName('');
+    setParentContact('');
+    setShowAdd(true);
   }
 
   async function add() {
@@ -420,11 +473,66 @@ export function StudentsTab() {
     }
   }
 
+  const rowStyle = { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderTopWidth: 1, borderTopColor: colors.border };
+
+  // One student row (or its inline edit form). A plain function, not a
+  // component, so typing in the edit boxes doesn't remount it and drop focus.
+  function renderStudent(s) {
+    if (editingId === s.id) {
+      return (
+        <View key={s.id} style={rowStyle}>
+          <SectionLabel>Edit student {s.id}</SectionLabel>
+          <SectionLabel>Beneficiary</SectionLabel>
+          <Select value={eBenId} onSelect={setEBenId} options={benOptions} />
+          <Field label="Student name" value={eName} onChangeText={setEName} />
+          <DateField label="Joined date (optional)" value={eJoined} onChange={setEJoined} />
+          <Field label="Parent name (optional)" value={eParentName} onChangeText={setEParentName} />
+          <Field label="Parent contact (optional)" value={eParentContact} onChangeText={setEParentContact} keyboardType="phone-pad" />
+          <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
+        </View>
+      );
+    }
+    return (
+      <View key={s.id} style={[rowStyle, { flexDirection: 'row', alignItems: 'flex-start' }]}>
+        <View style={{ flex: 1, paddingRight: spacing.xs }}>
+          <Text style={{ fontWeight: '700', color: colors.text }}>{s.name}</Text>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+            {s.id} - Joined: {s.joinedDate || '--'}
+            {s.parentName ? ` - Parent: ${s.parentName}` : ''}
+            {s.parentContact ? ` (${s.parentContact})` : ''}
+          </Text>
+          <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+            Updated {dateOnly(s.updatedAt)} by {s.updatedBy ? resName(db, s.updatedBy) : '--'}
+          </Text>
+        </View>
+        <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(s)} />
+        <IconButton
+          name="trash-outline"
+          color={colors.red}
+          label="Delete"
+          onPress={() => confirmDelete('Delete student', `Remove ${s.name}? They will also drop out of any DSR lines they were part of.`, () => deleteRecord('studentMaster', s.id))}
+        />
+      </View>
+    );
+  }
+
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-      <ListHeader title="Students" count={db.studentMaster.length} onAdd={() => setShowAdd(true)} addLabel="Add student" />
+      <ListHeader title="Students" count={shownCount} onAdd={() => openAdd(filterBen || lastOpenedBen)} addLabel="Add student" />
       <Select value={filterBen} onSelect={setFilterBen} options={[{ value: '', label: 'All beneficiaries' }, ...benOptions]} />
       <Field label="Filter" value={filter} onChangeText={setFilter} placeholder="Search by name, ID or parent..." />
+
+      {visible.length > 1 && !q && (
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: spacing.sm }}>
+          <TouchableOpacity onPress={() => setOpen(Object.fromEntries(visible.map((g) => [g.key, true])))}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Expand all</Text>
+          </TouchableOpacity>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>{'   |   '}</Text>
+          <TouchableOpacity onPress={() => setOpen(Object.fromEntries(visible.map((g) => [g.key, false])))}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Collapse all</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <AddModal visible={showAdd} title="Add student" onClose={() => setShowAdd(false)}>
         <SectionLabel>Beneficiary</SectionLabel>
@@ -436,52 +544,29 @@ export function StudentsTab() {
         <PrimaryButton title={saving ? 'Saving...' : 'Add student'} onPress={add} disabled={saving} />
       </AddModal>
 
-      {rows.length === 0 && (
+      {visible.length === 0 && (
         <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
           {db.studentMaster.length === 0 ? 'No students yet. Tap + to add one, or import a sheet below.' : 'No students match your filter.'}
         </Text>
       )}
 
-      {rows.map((s) => {
-        const ben = db.beneficiaries.find((b) => b.id === s.beneficiaryId);
-        return editingId === s.id ? (
-          <Card key={s.id}>
-            <SectionLabel>Edit student {s.id}</SectionLabel>
-            <SectionLabel>Beneficiary</SectionLabel>
-            <Select value={eBenId} onSelect={setEBenId} options={benOptions} />
-            <Field label="Student name" value={eName} onChangeText={setEName} />
-            <DateField label="Joined date (optional)" value={eJoined} onChange={setEJoined} />
-            <Field label="Parent name (optional)" value={eParentName} onChangeText={setEParentName} />
-            <Field label="Parent contact (optional)" value={eParentContact} onChangeText={setEParentContact} keyboardType="phone-pad" />
-            <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
-          </Card>
-        ) : (
-          <Card key={s.id}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: spacing.sm }}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>{s.name}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {s.id} - {benLabel(ben)}
-                </Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  Joined: {s.joinedDate || '--'}
-                  {s.parentName ? ` - Parent: ${s.parentName}` : ''}
-                  {s.parentContact ? ` (${s.parentContact})` : ''}
-                </Text>
-                <Text style={{ color: colors.textMuted, fontSize: 11 }}>
-                  Updated {dateOnly(s.updatedAt)} by {s.updatedBy ? resName(db, s.updatedBy) : '--'}
-                </Text>
+      {visible.map((g) => {
+        const isOpen = isGroupOpen(g);
+        const countText = q && g.shown.length !== g.items.length ? `${g.shown.length} of ${g.items.length} students` : `${g.items.length} student${g.items.length === 1 ? '' : 's'}`;
+        return (
+          <Card key={g.key || 'none'} style={{ padding: 0, overflow: 'hidden' }}>
+            <TouchableOpacity
+              onPress={() => (g.forceOpen ? null : toggleGroup(g))}
+              style={{ flexDirection: 'row', alignItems: 'center', padding: spacing.md, backgroundColor: colors.chipBg }}
+            >
+              <Ionicons name={isOpen ? 'chevron-down' : 'chevron-forward'} size={18} color={colors.primary} />
+              <View style={{ flex: 1, marginLeft: spacing.sm, paddingRight: spacing.xs }}>
+                <Text style={{ fontWeight: '800', color: colors.text }}>{g.name}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11 }}>{countText}</Text>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(s)} />
-                <IconButton
-                  name="trash-outline"
-                  color={colors.red}
-                  label="Delete"
-                  onPress={() => confirmDelete('Delete student', `Remove ${s.name}? They will also drop out of any DSR lines they were part of.`, () => deleteRecord('studentMaster', s.id))}
-                />
-              </View>
-            </View>
+              {!!g.key && <IconButton name="add-circle-outline" color={colors.primary} label="Add student" onPress={() => openAdd(g.key)} />}
+            </TouchableOpacity>
+            {isOpen && g.shown.map((s) => renderStudent(s))}
           </Card>
         );
       })}
@@ -499,9 +584,15 @@ export function StudentsTab() {
 // BOOKS
 // =============================================================================
 
+// Books are shown grouped by language: each language is a collapsible bar with
+// its book count and a "+" to add a book straight into it, the same way the
+// Materials and Students masters are laid out. The count in the header always
+// matches the books currently showing (it drops when a search is applied).
 export function BooksTab() {
   const { db, addRecord, updateRecord, deleteRecord, nextId } = useData();
   const [filter, setFilter] = useState('');
+  const [open, setOpen] = useState({}); // language key (lower-case) -> expanded?
+  const [lastOpened, setLastOpened] = useState(''); // language name last expanded
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -516,13 +607,51 @@ export function BooksTab() {
   const [eClassification, setEClassification] = useState('');
   const [eAuthor, setEAuthor] = useState('');
 
-  const rows = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return db.bookMaster
-      .filter((b) => !q || [b.id, b.title, b.language, b.classification, b.author].filter(Boolean).join(' ').toLowerCase().includes(q))
-      .slice()
-      .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-  }, [db.bookMaster, filter]);
+  const keyOf = (l) => String(l || '').trim().toLowerCase();
+
+  // One group per language (case-insensitive), books sorted by title.
+  const groups = useMemo(() => {
+    const map = {};
+    db.bookMaster.forEach((b) => {
+      const key = keyOf(b.language);
+      const g = (map[key] = map[key] || { key, name: (b.language || '').trim() || '(no language)', items: [] });
+      g.items.push(b);
+    });
+    Object.values(map).forEach((g) => g.items.sort((a, b) => byText(a.title, b.title, a.id, b.id)));
+    return Object.values(map).sort((a, b) => a.name.localeCompare(b.name));
+  }, [db.bookMaster]);
+
+  const languages = useMemo(() => groups.filter((g) => g.key).map((g) => g.name), [groups]);
+
+  // With a search, only languages with a match show (and open up), listing just
+  // the matching books unless the language name itself matched.
+  const q = filter.trim().toLowerCase();
+  const visible = useMemo(() => {
+    if (!q) return groups.map((g) => ({ ...g, shown: g.items, forceOpen: false }));
+    const hit = (b) => [b.id, b.title, b.classification, b.author].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return groups
+      .map((g) => {
+        const shown = g.name.toLowerCase().includes(q) ? g.items : g.items.filter(hit);
+        return { ...g, shown, forceOpen: true };
+      })
+      .filter((g) => g.shown.length > 0);
+  }, [groups, q]);
+
+  // Number of books showing right now (the total when no search is applied).
+  const shownCount = visible.reduce((n, g) => n + g.shown.length, 0);
+
+  function toggleGroup(g, isOpen) {
+    setOpen((prev) => ({ ...prev, [g.key]: !isOpen }));
+    if (!isOpen && g.key) setLastOpened(g.name);
+  }
+
+  function openAdd(lang) {
+    setTitle('');
+    setLanguage(lang || '');
+    setClassification('');
+    setAuthor('');
+    setShowAdd(true);
+  }
 
   async function add() {
     if (!title.trim()) return Alert.alert('Missing fields', 'Title is required.');
@@ -537,7 +666,6 @@ export function BooksTab() {
       });
       Alert.alert('Saved', 'Book added.', [{ text: 'OK', onPress: () => setShowAdd(false) }]);
       setTitle('');
-      setLanguage('');
       setClassification('');
       setAuthor('');
     } catch (e) {
@@ -573,58 +701,101 @@ export function BooksTab() {
     }
   }
 
+  const rowStyle = { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderTopWidth: 1, borderTopColor: colors.border };
+
+  // One book row (or its inline edit form). A plain function, not a component,
+  // so typing in the edit boxes doesn't remount it and drop focus.
+  function renderBook(b) {
+    if (editingId === b.id) {
+      return (
+        <View key={b.id} style={rowStyle}>
+          <SectionLabel>Edit book {b.id}</SectionLabel>
+          <Field label="Title" value={eTitle} onChangeText={setETitle} />
+          <Field label="Language" value={eLanguage} onChangeText={setELanguage} />
+          <Field label="Classification" value={eClassification} onChangeText={setEClassification} />
+          <Field label="Author (optional)" value={eAuthor} onChangeText={setEAuthor} />
+          <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
+        </View>
+      );
+    }
+    return (
+      <View key={b.id} style={[rowStyle, { flexDirection: 'row', alignItems: 'flex-start' }]}>
+        <View style={{ flex: 1, paddingRight: spacing.xs }}>
+          <Text style={{ fontWeight: '700', color: colors.text }}>{b.title}</Text>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+            {b.id} - {b.classification || '--'}
+          </Text>
+          {b.author ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>Author: {b.author}</Text> : null}
+        </View>
+        <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(b)} />
+        <IconButton
+          name="trash-outline"
+          color={colors.red}
+          label="Delete"
+          onPress={() => confirmDelete('Delete book', `Remove ${b.title}?`, () => deleteRecord('bookMaster', b.id))}
+        />
+      </View>
+    );
+  }
+
   return (
     <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-      <ListHeader title="Books" count={db.bookMaster.length} onAdd={() => setShowAdd(true)} addLabel="Add book" />
+      <ListHeader title="Books" count={shownCount} onAdd={() => openAdd(lastOpened)} addLabel="Add book" />
       <Field label="Filter" value={filter} onChangeText={setFilter} placeholder="Search by title, language, author..." />
+
+      {visible.length > 1 && !q && (
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: spacing.sm }}>
+          <TouchableOpacity onPress={() => setOpen(Object.fromEntries(groups.map((g) => [g.key, true])))}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Expand all</Text>
+          </TouchableOpacity>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>{'   |   '}</Text>
+          <TouchableOpacity onPress={() => setOpen({})}>
+            <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 12 }}>Collapse all</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <AddModal visible={showAdd} title="Add book" onClose={() => setShowAdd(false)}>
         <Field label="Title" value={title} onChangeText={setTitle} placeholder="Book title" />
         <Field label="Language" value={language} onChangeText={setLanguage} placeholder="e.g. Tamil, English" />
+        {languages.length > 0 && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.sm }}>
+            {languages.map((l) => (
+              <Chip key={l} label={l} active={keyOf(l) === keyOf(language)} onPress={() => setLanguage(l)} />
+            ))}
+          </View>
+        )}
         <Field label="Classification" value={classification} onChangeText={setClassification} placeholder="e.g. Comedy, Story, Cartoon" />
         <Field label="Author (optional)" value={author} onChangeText={setAuthor} />
         <PrimaryButton title={saving ? 'Saving...' : 'Add book'} onPress={add} disabled={saving} />
       </AddModal>
 
-      {rows.length === 0 && (
+      {visible.length === 0 && (
         <Text style={{ color: colors.textMuted, marginBottom: spacing.md }}>
           {db.bookMaster.length === 0 ? 'No books yet. Tap + to add one, or import a sheet below.' : 'No books match your filter.'}
         </Text>
       )}
 
-      {rows.map((b) =>
-        editingId === b.id ? (
-          <Card key={b.id}>
-            <SectionLabel>Edit book {b.id}</SectionLabel>
-            <Field label="Title" value={eTitle} onChangeText={setETitle} />
-            <Field label="Language" value={eLanguage} onChangeText={setELanguage} />
-            <Field label="Classification" value={eClassification} onChangeText={setEClassification} />
-            <Field label="Author (optional)" value={eAuthor} onChangeText={setEAuthor} />
-            <SaveCancel saving={saving} onSave={saveEdit} onCancel={() => setEditingId(null)} />
-          </Card>
-        ) : (
-          <Card key={b.id}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: spacing.sm }}>
-                <Text style={{ fontWeight: '700', color: colors.text }}>{b.title}</Text>
-                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                  {b.id} - {b.language || '--'} - {b.classification || '--'}
-                </Text>
-                {b.author ? <Text style={{ color: colors.textMuted, fontSize: 12 }}>Author: {b.author}</Text> : null}
+      {visible.map((g) => {
+        const isOpen = g.forceOpen || !!open[g.key];
+        const countText = q && g.shown.length !== g.items.length ? `${g.shown.length} of ${g.items.length} books` : `${g.items.length} book${g.items.length === 1 ? '' : 's'}`;
+        return (
+          <Card key={g.key || 'none'} style={{ padding: 0, overflow: 'hidden' }}>
+            <TouchableOpacity
+              onPress={() => (g.forceOpen ? null : toggleGroup(g, isOpen))}
+              style={{ flexDirection: 'row', alignItems: 'center', padding: spacing.md, backgroundColor: colors.chipBg }}
+            >
+              <Ionicons name={isOpen ? 'chevron-down' : 'chevron-forward'} size={18} color={colors.primary} />
+              <View style={{ flex: 1, marginLeft: spacing.sm, paddingRight: spacing.xs }}>
+                <Text style={{ fontWeight: '800', color: colors.text }}>{g.name}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11 }}>{countText}</Text>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                <IconButton name="create-outline" color={colors.primary} label="Edit" onPress={() => startEdit(b)} />
-                <IconButton
-                  name="trash-outline"
-                  color={colors.red}
-                  label="Delete"
-                  onPress={() => confirmDelete('Delete book', `Remove ${b.title}?`, () => deleteRecord('bookMaster', b.id))}
-                />
-              </View>
-            </View>
+              <IconButton name="add-circle-outline" color={colors.primary} label="Add book" onPress={() => openAdd(g.key ? g.name : '')} />
+            </TouchableOpacity>
+            {isOpen && g.shown.map((b) => renderBook(b))}
           </Card>
-        )
-      )}
+        );
+      })}
 
       <ImportFromExcel
         label="books"
